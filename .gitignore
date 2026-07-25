@@ -43,6 +43,9 @@ pnpm-debug.log*
 # Vercel
 .vercel
 
+# Database backups (contain real financial data)
+/backups/
+
 # Test reports
 /reports/
 playwright-report/
