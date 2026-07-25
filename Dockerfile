@@ -11,7 +11,11 @@ RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild sharp unrs-r
 FROM base AS migrate-deps
 WORKDIR /deps
 COPY scripts/install-migrate-deps.mjs ./
-COPY package.json ./
+# Copied under a non-manifest name on purpose: if this lands as /deps/package.json,
+# `npm install` also pulls in every dependency AND devDependency it declares
+# (drizzle-kit, jsdom, babel, ...), baking ~750 packages and vulnerable esbuild
+# Go binaries into the runtime image. The migrate stage needs drizzle-orm + pg only.
+COPY package.json ./app-package.json
 RUN node install-migrate-deps.mjs
 
 FROM base AS builder
@@ -26,6 +30,10 @@ RUN pnpm build
 
 FROM base AS runner
 RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
+# The runtime is pure node (entrypoint runs migrate.mjs then server.js), so npm
+# is dead weight that only widens the attack surface — its bundled dependencies
+# are a recurring source of CVEs in image scans. Drop it from the final image.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
