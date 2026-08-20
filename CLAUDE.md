@@ -50,7 +50,7 @@ pnpm dev:setup                   # Start Postgres + migrate + dev server
 pnpm dev                         # Next.js dev server on :4200 (requires running Postgres)
 pnpm db:generate                 # Generate Drizzle migrations
 pnpm db:migrate                  # Run migrations
-pnpm db:studio                   # Open Drizzle Studio
+pnpm db:studio                   # Starts a local proxy on :4983; open https://local.drizzle.studio in a browser to use it
 pnpm build:mcp-widgets           # Build the MCP interactive dashboard widgets (src/lib/mcp/apps)
 
 # Testing
