@@ -6,6 +6,7 @@ import {
   insertTransaction,
   insertCategoryGroup,
   insertCategory,
+  insertMerchant,
 } from "./helpers";
 import {
   updateTransactionCategory,
@@ -13,7 +14,7 @@ import {
   bulkUpdateCategory,
   bulkMarkReviewed,
 } from "../../src/actions/transactions";
-import { transactions } from "../../src/db/schema";
+import { transactions, merchants } from "../../src/db/schema";
 import { eq } from "drizzle-orm";
 import type { LedgrDb } from "../../src/db";
 
@@ -68,6 +69,41 @@ describe("transaction actions", () => {
       const [row] = await db.select().from(transactions).where(eq(transactions.id, txnId));
       expect(row!.categoryId).toBeNull();
       expect(row!.reviewed).toBe(false);
+    });
+
+    it("also sets the merchant's default category so future syncs pick it up (ISSUE-004)", async () => {
+      const { merchantId } = await insertMerchant(db, mockHouseholdId);
+      const { transactionId } = await insertTransaction(db, mockHouseholdId, accountId, { merchantId });
+
+      const result = await updateTransactionCategory(transactionId, categoryId, db);
+      expect(result).toEqual({ success: true });
+
+      const [merchantRow] = await db.select().from(merchants).where(eq(merchants.id, merchantId));
+      expect(merchantRow!.categoryId).toBe(categoryId);
+    });
+
+    it("does not clear the merchant's default category when clearing a transaction's category", async () => {
+      const { merchantId } = await insertMerchant(db, mockHouseholdId, { categoryId });
+      const { transactionId } = await insertTransaction(db, mockHouseholdId, accountId, {
+        merchantId,
+        categoryId,
+      });
+
+      const result = await updateTransactionCategory(transactionId, null, db);
+      expect(result).toEqual({ success: true });
+
+      const [merchantRow] = await db.select().from(merchants).where(eq(merchants.id, merchantId));
+      expect(merchantRow!.categoryId).toBe(categoryId);
+    });
+
+    it("leaves merchants untouched when the transaction has no merchant", async () => {
+      const { transactionId } = await insertTransaction(db, mockHouseholdId, accountId);
+
+      const result = await updateTransactionCategory(transactionId, categoryId, db);
+      expect(result).toEqual({ success: true });
+
+      const [row] = await db.select().from(transactions).where(eq(transactions.id, transactionId));
+      expect(row!.categoryId).toBe(categoryId);
     });
   });
 

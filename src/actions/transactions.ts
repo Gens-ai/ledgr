@@ -4,7 +4,7 @@ import { eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db as defaultDb, type LedgrDb } from "@/db";
-import { transactions } from "@/db/schema";
+import { transactions, merchants } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
 import { notDeleted } from "@/lib/query-helpers";
 import { authorizeAction } from "@/lib/auth/authorize-action";
@@ -49,7 +49,7 @@ export async function updateTransactionCategoryScoped(
 
   const scoped = scopedQuery(householdId, db);
   const [existing] = await db
-    .select({ id: transactions.id })
+    .select({ id: transactions.id, merchantId: transactions.merchantId })
     .from(transactions)
     .where(scoped.where(transactions, eq(transactions.id, transactionId), notDeleted(transactions)))
     .limit(1);
@@ -60,9 +60,20 @@ export async function updateTransactionCategoryScoped(
 
   const updates = buildCategoryUpdate(parsedCatId.data);
 
-  await db.update(transactions)
-    .set(updates)
-    .where(eq(transactions.id, existing.id));
+  await db.transaction(async (tx) => {
+    await tx.update(transactions)
+      .set(updates)
+      .where(eq(transactions.id, existing.id));
+
+    // Propagate the correction to the merchant's default category (tier 2 of the
+    // categorization pipeline) so future synced transactions from this merchant
+    // categorize correctly instead of needing the same manual fix every time.
+    if (parsedCatId.data !== null && existing.merchantId) {
+      await tx.update(merchants)
+        .set({ categoryId: parsedCatId.data, updatedAt: new Date() })
+        .where(scoped.where(merchants, eq(merchants.id, existing.merchantId)));
+    }
+  });
 
   revalidatePath("/transactions");
   return { success: true };
