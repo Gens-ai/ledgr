@@ -1,9 +1,8 @@
 ---
 id: ISSUE-004
 title: Manually recategorizing a transaction doesn't generalize to future transactions
-status: resolved
+status: in-progress
 created: 2026-08-20
-resolved: 2026-08-20
 ---
 
 ## Summary
@@ -20,6 +19,7 @@ The AI fallback tier (`src/lib/ai/categorize.ts`) only attempts each transaction
 
 - **2026-08-20:** Confirmed by reading `updateTransactionCategoryScoped` directly — its only side effects are setting `categoryId`, `categorySource`, `reviewed`, and `updatedAt` on the single `transactions` row (via `buildCategoryUpdate`), plus a `revalidatePath("/transactions")` call. No write to `merchants` or `category_rules`.
 
-## Resolution
+## Resolution (pending verification)
 
-- **2026-08-20:** `updateTransactionCategoryScoped` now also writes the merchant's default category (tier 2) inside the same DB transaction when a category is set (not cleared) and the transaction has a merchant — `src/actions/transactions.ts` — commit `141f72a`. Rule creation (tier 1) remains out of scope here; tracked separately as ISSUE-002.
+- **2026-08-20:** `updateTransactionCategoryScoped` now also writes the merchant's default category (tier 2) inside the same DB transaction when a category is set (not cleared) and the transaction has a merchant — `src/actions/transactions.ts`, with integration test coverage in `tests/integration/transaction-actions.test.ts` — commit `141f72a`. Rule creation (tier 1) remains out of scope here; tracked separately as ISSUE-002.
+- **2026-08-20:** Reopened — the fix landed and was marked resolved before manual verification against a running app. Status will move to `resolved` once confirmed working end-to-end (see manual test steps discussed in-session: recategorize a merchant-linked transaction via the `/transactions` UI, confirm `merchants.categoryId` updates via Drizzle Studio, and confirm clearing a category doesn't reset it).
