@@ -53,3 +53,5 @@ test-results/
 .stryker-tmp/
 docs/*
 !docs/images/
+!docs/issues/
+.gitnexus
