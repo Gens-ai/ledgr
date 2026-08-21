@@ -24,13 +24,13 @@ export default async function SettingsPage() {
           Configure integrations and access controls.
         </p>
       </div>
-      <DemoModeToggle initialEnabled={demoEnabled} />
       <CategoriesSettingsLink />
       <PasskeysManager />
       <McpSettingsForm
         mcpEnabled={mcpSettings.mcpEnabled}
         connectedClients={mcpSettings.connectedClients}
       />
+      <DemoModeToggle initialEnabled={demoEnabled} />
       <DangerZone />
     </div>
   );
