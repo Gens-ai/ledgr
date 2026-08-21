@@ -156,14 +156,18 @@ Ledgr ships a built-in MCP server (`src/lib/mcp/`, `MCP_ENABLED=false` by defaul
 - **Own OAuth 2.1 authorization server** — `src/lib/mcp/auth/oauth-server.ts` + `src/app/api/mcp/oauth/{authorize,register,token,revoke}`, with discovery documents at `src/app/.well-known/oauth-authorization-server` and `.well-known/oauth-protected-resource`. Dynamic client registration is supported.
 - **Scopes gate tool access**: `ledgr:read`, `ledgr:write`, `ledgr:sync`, granted by the user during the consent flow (`src/app/mcp/authorize/`).
 - **Per-user kill switch** — `assertMcpEnabled()` (`src/lib/mcp/auth/guard.ts`) checks the user's `mcp_settings.mcpEnabled` before any tool runs.
-- **Tools** live in `src/lib/mcp/tools/`, one file per domain (accounts, transactions, budgets, categories, investments, recurring, reports, dashboard, sync).
+- **Tools** live in `src/lib/mcp/tools/`, one file per domain (accounts, transactions, budgets, categories, investments, recurring, reports, dashboard, sync, savings).
 - **Interactive widgets** — tools like `show_financial_dashboard` render React components (`src/lib/mcp/apps/src/`) that are pre-built into standalone HTML (`src/lib/mcp/apps/widgets/`); rebuild with `pnpm build:mcp-widgets` after editing a widget source.
 - **Rate limiting** — `src/lib/mcp/rate-limit.ts`.
-- `ledgr-plugin/` at the repo root packages this as a distributable Claude Code / Codex / OpenCode plugin (marketplace `KenTaniguchi-R/ledgr`) with financial-workflow skills (`budget-check`, `monthly-review`, `net-worth-tracking`, `savings-analysis`, `subscription-audit`).
+- `ledgr-plugin/` at the repo root packages this as a distributable Claude Code / Codex / OpenCode plugin (marketplace `KenTaniguchi-R/ledgr`) with financial-workflow skills (`budget-check`, `monthly-review`, `net-worth-tracking`, `savings-analysis`, `subscription-audit`, `deals-finder`).
+
+## Savings Advisor
+
+An on-demand (never automatic) AI feature that mines a household's real transaction history for specific, dollar-quantified savings suggestions — `src/lib/ai/savings/` (profile → prompt → model → validate → persist, mirroring the AI-categorization pipeline's "app computes facts, model proposes actions" split). Reachable from the dashboard, transaction/category detail, AI chat (`getSavingsSuggestions` tool), and MCP (`get_savings_suggestions`, `get_spending_profile`). Includes an opt-in "deals finder" that lets the household's configured AI provider search the web (Settings → Savings Advisor). See `docs/superpowers/specs/2026-08-21-savings-advisor-design.md` for the full design, including the three-tier deals-finder approach and known limitations.
 
 ## Data Model Highlights
 
-30 tables. Key entities: `households`, `accounts`, `transactions` (with `transaction_splits`, `transfer_pair_id`), `merchants`, `category_groups`/`categories`/`category_rules`, `budgets`/`budget_categories`, `recurring_transactions`, `investment_holdings`/`holdings_history`/`investment_transactions`, `plaid_items`/`sync_log`, `saved_reports`, `oauth_clients`/`oauth_codes`/`oauth_consents`/`oauth_refresh_tokens`.
+31 tables. Key entities: `households`, `accounts`, `transactions` (with `transaction_splits`, `transfer_pair_id`), `merchants`, `category_groups`/`categories`/`category_rules`, `budgets`/`budget_categories`, `recurring_transactions`, `investment_holdings`/`holdings_history`/`investment_transactions`, `plaid_items`/`sync_log`, `saved_reports`, `savings_suggestions`, `oauth_clients`/`oauth_codes`/`oauth_consents`/`oauth_refresh_tokens`.
 
 **Schema files live in `src/db/schema/` (one file per domain, re-exported from `index.ts`)** — this is the source of truth for table/column names, types, and relations; see `docs/superpowers/specs/` for the design rationale behind individual features.
 

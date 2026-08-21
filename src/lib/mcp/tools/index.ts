@@ -10,9 +10,11 @@ import { registerInvestmentTools } from "./investments";
 import { registerCategoryReadTools, registerCategoryWriteTools } from "./categories";
 import { registerSyncTools } from "./sync";
 import { registerAppTools } from "../apps/register";
+import { registerSavingsReadTools } from "./savings";
 
 export function registerAllTools(server: McpServer, claims: AccessTokenClaims) {
   const householdId = claims.household_id;
+  const userId = claims.sub;
   const scopes = claims.scope.split(" ");
 
   if (scopes.includes("ledgr:read")) {
@@ -25,6 +27,7 @@ export function registerAllTools(server: McpServer, claims: AccessTokenClaims) {
     registerInvestmentTools(server, householdId);
     registerCategoryReadTools(server, householdId);
     registerAppTools(server, householdId);
+    registerSavingsReadTools(server, householdId, userId);
   }
 
   if (scopes.includes("ledgr:write")) {

@@ -18,6 +18,7 @@ import { getSession } from "@/lib/auth/session";
 import { DashboardGridLoader } from "@/components/organisms/dashboard-grid-loader";
 import { NetWorthHero } from "@/components/organisms/net-worth-hero";
 import { DashboardStatRow } from "@/components/molecules/dashboard-stat-row";
+import { SavingsAdvisorCard } from "@/components/organisms/savings-advisor-card";
 import type { DashboardData } from "@/components/organisms/dashboard-grid";
 
 export default async function DashboardPage() {
@@ -74,6 +75,9 @@ export default async function DashboardPage() {
         month={spendingMonth}
         prevMonth={prevMonth}
       />
+      <div className="mt-4">
+        <SavingsAdvisorCard />
+      </div>
       <DashboardGridLoader layout={layout} data={data} />
     </div>
   );

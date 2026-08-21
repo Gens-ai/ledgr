@@ -1,18 +1,22 @@
 import { getSession } from "@/lib/auth/session";
 import { getMcpSettings } from "@/queries/mcp-settings";
+import { getDealsSettings } from "@/queries/savings";
 import { McpSettingsForm } from "@/components/organisms/mcp-settings-form";
+import { SavingsSettingsForm } from "@/components/organisms/savings-settings-form";
 import { DemoModeToggle } from "@/components/molecules/demo-mode-toggle";
 import { PasskeysManager } from "@/components/organisms/passkeys-manager";
 import { DangerZone } from "@/components/organisms/danger-zone";
 import { isDemoMode } from "@/lib/demo-mode";
+import { hasWebSearchProvider } from "@/lib/ai/config";
 
 export default async function SettingsPage() {
   const session = await getSession();
   if (!session) return null;
 
-  const [mcpSettings, demoEnabled] = await Promise.all([
+  const [mcpSettings, demoEnabled, dealsSettings] = await Promise.all([
     getMcpSettings(session.user.id),
     isDemoMode(session.user.id),
+    getDealsSettings(session.user.id),
   ]);
 
   return (
@@ -28,6 +32,11 @@ export default async function SettingsPage() {
       <McpSettingsForm
         mcpEnabled={mcpSettings.mcpEnabled}
         connectedClients={mcpSettings.connectedClients}
+      />
+      <SavingsSettingsForm
+        initialEnabled={dealsSettings.enabled}
+        initialLocation={dealsSettings.location}
+        hasWebSearchProvider={hasWebSearchProvider()}
       />
       <DangerZone />
     </div>

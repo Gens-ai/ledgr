@@ -37,7 +37,7 @@ export async function POST(request: Request) {
 
   const { messages }: { messages: UIMessage[] } = await request.json();
   const householdId = await getHouseholdId();
-  const tools = config.toolCalling ? financialTools(householdId) : undefined;
+  const tools = config.toolCalling ? financialTools(householdId, session.user.id) : undefined;
 
   const result = streamText({
     model,
