@@ -8,7 +8,7 @@ import {
 } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
 import { notDeleted } from "@/lib/query-helpers";
-import { getIncomeCategoryIds } from "@/queries/shared-conditions";
+import { isIncome as isIncomeCondition } from "@/queries/shared-conditions";
 import { aggregateSpending, enrichSpendingMap } from "@/lib/spending-helpers";
 import type { ReportFilters } from "@/queries/reports";
 import { classifyAccountType } from "@/lib/account-utils";
@@ -263,15 +263,10 @@ export async function getCashFlow(
   d.setDate(1);
   const dateFrom = d.toISOString().slice(0, 10);
 
-  const incomeCatIds = [...(await getIncomeCategoryIds(householdId, db))];
-
-  // COALESCE(...,false): a null or non-income category is treated as non-income,
-  // matching the prior `txn.categoryId && incomeCatIds.has(...)` check. When
-  // there are no income categories, the predicate is a constant false.
-  const isIncome =
-    incomeCatIds.length > 0
-      ? sql`COALESCE(${inArray(transactions.categoryId, incomeCatIds)}, false)`
-      : sql`false`;
+  // Income/expenses are classified by transaction sign (see shared-conditions.ts)
+  // rather than category membership — most income transactions never get
+  // auto-categorized into an income category, which badly undercounts income.
+  const isIncome = isIncomeCondition();
   const monthExpr = sql<string>`substring(${transactions.date}, 1, 7)`;
 
   const rows = await db

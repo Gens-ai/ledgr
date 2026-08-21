@@ -10,7 +10,7 @@ import {
 } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
 import { notDeleted, sumAbs } from "@/lib/query-helpers";
-import { getIncomeCategoryIds, notIncome } from "@/queries/shared-conditions";
+import { getIncomeCategoryIds, isIncome as isIncomeCondition, notIncome } from "@/queries/shared-conditions";
 import { classifyAccountType } from "@/lib/account-utils";
 import { resolvedCategoryLabel } from "@/lib/labels";
 import {
@@ -101,20 +101,10 @@ export async function getIncomeVsExpense(
     conditions.push(inArray(transactions.categoryId, filters.categoryIds));
   }
 
-  const incomeCatIds = [...(await getIncomeCategoryIds(householdId, db))];
-
-  // Income sums the raw (signed) amount of income-category txns; expenses sum
-  // the absolute value of everything else. An uncategorized row (no
-  // categoryId) falls back to its sign: a positive normalizedAmount (credit)
-  // counts as income rather than defaulting to expense.
-  const inIncomeCat =
-    incomeCatIds.length > 0
-      ? inArray(transactions.categoryId, incomeCatIds)
-      : sql`false`;
-  const isIncome = sql`(
-    COALESCE(${inIncomeCat}, false)
-    OR (${transactions.categoryId} IS NULL AND ${transactions.normalizedAmount} > 0)
-  )`;
+  // Income/expenses are classified by transaction sign (see shared-conditions.ts)
+  // rather than category membership — most income transactions never get
+  // auto-categorized into an income category, which badly undercounts income.
+  const isIncome = isIncomeCondition();
   const monthExpr = sql<string>`substring(${transactions.date}, 1, 7)`;
 
   const rows = await db
@@ -520,7 +510,6 @@ export async function getSafeToSpend(
   db: LedgrDb = defaultDb,
 ): Promise<SafeToSpendResult> {
   const scoped = scopedQuery(householdId, db);
-  const incomeCatIds = await getIncomeCategoryIds(householdId, db);
   const { from: dateFrom, to: dateTo } = monthBounds(getCurrentMonth());
 
   // Monthly income (including pending — so paycheck shows immediately)
@@ -535,9 +524,7 @@ export async function getSafeToSpend(
         lte(transactions.date, dateTo),
         eq(transactions.isTransfer, false),
         isNull(transactions.transferPairId),
-        incomeCatIds.size > 0
-          ? inArray(transactions.categoryId, [...incomeCatIds])
-          : sql`0`,
+        isIncomeCondition(),
       ),
     );
 
@@ -594,7 +581,12 @@ export async function getSafeToSpend(
     }
   }
 
-  // Discretionary spending: non-recurring expenses this month
+  // Discretionary spending: non-recurring expenses this month. normalizedAmount
+  // < 0 is a debit (expense) — this previously filtered > 0 (a credit), which
+  // summed miscategorized income credits as if they were expenses and
+  // deflated safeToSpend. See ISSUE-010. notIncome() additionally excludes
+  // anything explicitly tagged with an income category (e.g. a payroll
+  // correction posted as a negative amount), matching aggregateSpending.
   const notIncomeCondition = await notIncome(householdId, db);
   const discretionaryTxns = await db
     .select({ normalizedAmount: transactions.normalizedAmount })
@@ -609,12 +601,12 @@ export async function getSafeToSpend(
         eq(transactions.isTransfer, false),
         isNull(transactions.transferPairId),
         isNull(transactions.recurringTransactionId),
-        sql`${transactions.normalizedAmount} > 0`,
+        lt(transactions.normalizedAmount, 0),
         notIncomeCondition,
       ),
     );
 
-  const discretionarySpent = discretionaryTxns.reduce((s, t) => s + t.normalizedAmount, 0);
+  const discretionarySpent = discretionaryTxns.reduce((s, t) => s + Math.abs(t.normalizedAmount), 0);
 
   return {
     monthlyIncome,

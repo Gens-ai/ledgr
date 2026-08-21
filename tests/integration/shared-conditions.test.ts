@@ -7,7 +7,9 @@ import {
   insertCategory,
   insertTransaction,
 } from "./helpers";
-import { getIncomeCategoryIds, notIncome } from "../../src/queries/shared-conditions";
+import { getIncomeCategoryIds, isIncome, notIncome } from "../../src/queries/shared-conditions";
+import { transactions } from "../../src/db/schema";
+import { and, eq } from "drizzle-orm";
 import type { LedgrDb } from "../../src/db";
 
 let db: LedgrDb;
@@ -69,9 +71,6 @@ describe("notIncome", () => {
     });
 
     const condition = await notIncome(householdA, db);
-    const { transactions } = await import("../../src/db/schema");
-    const { and, eq } = await import("drizzle-orm");
-
     const rows = await db
       .select({ id: transactions.id })
       .from(transactions)
@@ -80,5 +79,75 @@ describe("notIncome", () => {
     const ids = rows.map((r) => r.id);
     expect(ids).toContain(expenseTxnId);
     expect(ids).not.toContain(incomeTxnId);
+  });
+
+  test("excludes an income-category row even when its amount is negative", async () => {
+    // e.g. a payroll correction posted as a debit should still be excluded
+    // from spending breakdowns (aggregateSpending, getCategoryTrends).
+    const { accountId } = await insertAccount(db, householdA);
+    const { transactionId: correctionTxnId } = await insertTransaction(db, householdA, accountId, {
+      categoryId: aIncomeCatId,
+      normalizedAmount: -9999,
+      amount: 9999,
+    });
+
+    const condition = await notIncome(householdA, db);
+    const rows = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(and(eq(transactions.householdId, householdA), condition));
+
+    expect(rows.map((r) => r.id)).not.toContain(correctionTxnId);
+  });
+});
+
+describe("isIncome", () => {
+  test("classifies by transaction sign, ignoring category", async () => {
+    const { accountId } = await insertAccount(db, householdA);
+    // Properly tagged income, positive amount
+    const { transactionId: incomeTxnId } = await insertTransaction(db, householdA, accountId, {
+      categoryId: aIncomeCatId,
+      normalizedAmount: 500000,
+      amount: -500000,
+    });
+    // Negative amount, no category
+    const { transactionId: expenseTxnId } = await insertTransaction(db, householdA, accountId, {
+      categoryId: null,
+      normalizedAmount: -2000,
+      amount: 2000,
+    });
+
+    const rows = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(and(eq(transactions.householdId, householdA), isIncome()));
+
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain(incomeTxnId);
+    expect(ids).not.toContain(expenseTxnId);
+  });
+
+  test("counts a positive-amount transaction as income even when miscategorized", async () => {
+    // Reproduces ISSUE-010: a real paycheck deposit that the auto-categorizer
+    // filed under a non-income category must still count as income for
+    // income-vs-expense totals (getCashFlow, getIncomeVsExpense, getSafeToSpend).
+    const { accountId } = await insertAccount(db, householdA);
+    const otherGroup = await insertCategoryGroup(db, householdA, { name: "Other" });
+    const { categoryId: miscCategoryId } = await insertCategory(db, householdA, otherGroup.groupId, {
+      name: "Miscellaneous",
+      isIncome: false,
+    });
+    const { transactionId: miscategorizedPaycheck } = await insertTransaction(db, householdA, accountId, {
+      categoryId: miscCategoryId,
+      normalizedAmount: 250000,
+      amount: -250000,
+    });
+
+    const rows = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(and(eq(transactions.householdId, householdA), isIncome()));
+
+    expect(rows.map((r) => r.id)).toContain(miscategorizedPaycheck);
   });
 });

@@ -280,7 +280,7 @@ describe("getMonthlySpending", () => {
 });
 
 describe("getCashFlow", () => {
-  it("separates income and expenses by month using isIncome category flag", async () => {
+  it("separates income and expenses by month using transaction sign", async () => {
     const { householdId } = await insertHousehold(db);
     const { accountId } = await insertAccount(db, householdId);
 
@@ -358,6 +358,32 @@ describe("getCashFlow", () => {
     const thisMonthData = result.find((r) => r.month === thisMonth);
     expect(thisMonthData).toBeDefined();
     expect(thisMonthData!.expenses).toBe(3000);
+  });
+
+  it("counts a positive-amount transaction as income even when miscategorized", async () => {
+    // Reproduces ISSUE-010: a paycheck deposit the auto-categorizer filed
+    // under a non-income category must still count as income.
+    const { householdId } = await insertHousehold(db);
+    const { accountId } = await insertAccount(db, householdId);
+    const { groupId } = await insertCategoryGroup(db, householdId);
+    const { categoryId: miscCategoryId } = await insertCategory(db, householdId, groupId, {
+      name: "Miscellaneous",
+      isIncome: false,
+    });
+
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    await insertTransaction(db, householdId, accountId, {
+      date: `${thisMonth}-15`,
+      normalizedAmount: 150000,
+      amount: -150000,
+      categoryId: miscCategoryId,
+    });
+
+    const result = await getCashFlow(householdId, 3, db);
+
+    const thisMonthData = result.find((r) => r.month === thisMonth);
+    expect(thisMonthData).toBeDefined();
+    expect(thisMonthData!.income).toBe(150000);
   });
 });
 
