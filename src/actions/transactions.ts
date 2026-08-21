@@ -35,12 +35,16 @@ function buildCategoryUpdate(categoryId: string | null) {
   };
 }
 
+export type UpdateTransactionCategoryResult =
+  | { success: true; merchantCategoryConflict?: { merchantId: string; currentCategoryId: string } }
+  | { error: string };
+
 export async function updateTransactionCategoryScoped(
   householdId: string,
   transactionId: string,
   categoryId: string | null,
   db: LedgrDb = defaultDb,
-): Promise<{ success: true } | { error: string }> {
+): Promise<UpdateTransactionCategoryResult> {
   const parsedTxnId = transactionIdSchema.safeParse(transactionId);
   const parsedCatId = categoryIdSchema.safeParse(categoryId);
   if (!parsedTxnId.success || !parsedCatId.success) {
@@ -60,30 +64,47 @@ export async function updateTransactionCategoryScoped(
 
   const updates = buildCategoryUpdate(parsedCatId.data);
 
+  let merchantCategoryConflict: { merchantId: string; currentCategoryId: string } | undefined;
+
   await db.transaction(async (tx) => {
     await tx.update(transactions)
       .set(updates)
       .where(eq(transactions.id, existing.id));
 
-    // Propagate the correction to the merchant's default category (tier 2 of the
-    // categorization pipeline) so future synced transactions from this merchant
-    // categorize correctly instead of needing the same manual fix every time.
-    if (parsedCatId.data !== null && existing.merchantId) {
+    if (parsedCatId.data === null || !existing.merchantId) {
+      return;
+    }
+
+    const [merchant] = await tx
+      .select({ categoryId: merchants.categoryId })
+      .from(merchants)
+      .where(scoped.where(merchants, eq(merchants.id, existing.merchantId)))
+      .limit(1);
+
+    if (!merchant || merchant.categoryId === null) {
+      // No existing default to conflict with — safe to set it automatically. This is
+      // the common case: the first time we've seen this merchant get manually categorized.
       await tx.update(merchants)
         .set({ categoryId: parsedCatId.data, updatedAt: new Date() })
         .where(scoped.where(merchants, eq(merchants.id, existing.merchantId)));
+    } else if (merchant.categoryId !== parsedCatId.data) {
+      // Merchant already defaults to a different category. Since a merchant can
+      // legitimately span multiple categories (e.g. Amazon), don't silently overwrite
+      // that default for every other transaction from this merchant — surface the
+      // conflict so the caller can ask the user whether to apply it more broadly.
+      merchantCategoryConflict = { merchantId: existing.merchantId, currentCategoryId: merchant.categoryId };
     }
   });
 
   revalidatePath("/transactions");
-  return { success: true };
+  return merchantCategoryConflict ? { success: true, merchantCategoryConflict } : { success: true };
 }
 
 export async function updateTransactionCategory(
   transactionId: string,
   categoryId: string | null,
   db: LedgrDb = defaultDb,
-): Promise<{ success: true } | { error: string }> {
+): Promise<UpdateTransactionCategoryResult> {
   const auth = await authorizeAction();
   if ("error" in auth) return auth;
   return updateTransactionCategoryScoped(auth.householdId, transactionId, categoryId, db);
