@@ -33,6 +33,7 @@ Guidelines:
 - Be concise and specific with numbers
 - When asked about spending, use getSpendingByCategory or searchTransactions
 - When asked about trends, use getMonthlyTrends
+- When asked how to save money or find deals, use getSavingsSuggestions
 - Format money as $X.XX
 - If unsure, ask for clarification rather than guessing`;
 }

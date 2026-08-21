@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { AmountDisplay } from "@/components/atoms/amount-display";
 import { BudgetProgressBar } from "@/components/atoms/budget-progress-bar";
+import { SavingsAdvisorButton } from "@/components/molecules/savings-advisor-button";
 import { setBudgetCategory, removeBudgetCategory } from "@/actions/budgets";
 import { centsToDisplay, centsToInputDisplay, parseToCents } from "@/lib/money";
 import { cn } from "@/lib/utils";
@@ -102,11 +103,16 @@ export function BudgetCategoryRow({
   return (
     <TableRow className="hover:bg-transparent">
       <TableCell className="py-2 px-3 text-sm">
-        <span className="flex items-center gap-2">
+        <span className="flex items-center gap-1.5">
           {categoryIcon && (
             <CategoryIcon name={categoryIcon} size={14} className="text-muted-foreground shrink-0" />
           )}
           {categoryName}
+          <SavingsAdvisorButton
+            scope={{ type: "category", id: categoryId }}
+            scopeLabel={categoryName}
+            className="size-5 opacity-60 hover:opacity-100"
+          />
         </span>
       </TableCell>
       <TableCell className="py-2 px-3">
