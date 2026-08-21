@@ -2,27 +2,35 @@ import { eq, and, isNull, desc } from "drizzle-orm";
 import { db as defaultDb, type LedgrDb } from "@/db";
 import { accounts, balanceHistory, transactions } from "@/db/schema";
 import { todayDateString } from "@/lib/date-utils";
+import { scopedQuery } from "@/lib/scoped-query";
 import { v4 as uuid } from "uuid";
 
 /**
- * Reconstructs approximate historical daily balances for all eligible accounts
- * by walking backward from the current balance using posted transactions.
+ * Reconstructs approximate historical daily balances for eligible accounts by
+ * walking backward from the current balance using posted transactions.
  *
  * - Skips investment accounts (use Plaid investments endpoint instead)
  * - Skips hidden and deleted accounts
  * - Skips accounts without a currentBalance
  * - Non-destructive: uses onConflictDoNothing so existing rows are preserved
+ *
+ * Pass `householdId` to scope the run to one household (e.g. right after a
+ * Plaid link); omit it to run across every household, as the standalone
+ * maintenance job does.
  */
-export async function backfillAccountBalances(db: LedgrDb = defaultDb): Promise<void> {
+export async function backfillAccountBalances(
+  db: LedgrDb = defaultDb,
+  householdId?: string,
+): Promise<void> {
   // 1. Get all eligible accounts
+  const baseConditions = and(isNull(accounts.deletedAt), eq(accounts.isHidden, false));
   const allAccounts = await db
     .select()
     .from(accounts)
     .where(
-      and(
-        isNull(accounts.deletedAt),
-        eq(accounts.isHidden, false),
-      )
+      householdId
+        ? scopedQuery(householdId, db).where(accounts, baseConditions)
+        : baseConditions
     );
 
   const eligibleAccounts = allAccounts.filter(

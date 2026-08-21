@@ -16,6 +16,7 @@ import { plaidItems, accounts, balanceHistory, institutionLogos } from "@/db/sch
 import { scopedQuery } from "@/lib/scoped-query";
 import { syncInstitution } from "@/lib/plaid/sync";
 import { syncInvestments } from "@/lib/plaid/investments";
+import { backfillAccountBalances } from "@/lib/jobs/backfill-balances";
 
 export async function createLinkToken() {
   const auth = await authorizeAction();
@@ -215,6 +216,7 @@ export async function exchangePublicToken(publicToken: string) {
     try {
       await syncInstitution(itemId, householdId, defaultDb);
       syncInvestments(itemId, householdId, defaultDb).catch(() => {});
+      await backfillAccountBalances(defaultDb, householdId);
     } catch (err) {
       console.error("[plaid] Auto-sync after link failed:", err);
     }

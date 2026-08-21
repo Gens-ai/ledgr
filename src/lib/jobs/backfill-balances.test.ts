@@ -120,6 +120,42 @@ describe("backfillAccountBalances", () => {
     }
   });
 
+  it("scopes to a single household when householdId is provided", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { householdId: householdA } = await insertHousehold(db);
+      const { householdId: householdB } = await insertHousehold(db);
+
+      const { accountId: accountA } = await insertAccount(db, householdA, {
+        currentBalance: 10000,
+        type: "checking",
+      });
+      const { accountId: accountB } = await insertAccount(db, householdB, {
+        currentBalance: 5000,
+        type: "checking",
+      });
+
+      await insertTransaction(db, householdA, accountA, {
+        date: "2026-05-07",
+        normalizedAmount: -1000,
+        pending: false,
+      });
+      await insertTransaction(db, householdB, accountB, {
+        date: "2026-05-07",
+        normalizedAmount: -500,
+        pending: false,
+      });
+
+      await backfillAccountBalances(db, householdA);
+
+      const rows = await db.select().from(balanceHistory);
+      expect(rows.every((r) => r.accountId === accountA)).toBe(true);
+      expect(rows.some((r) => r.accountId === accountB)).toBe(false);
+    } finally {
+      await close();
+    }
+  });
+
   test.prop([
     fc.array(fc.integer({ min: -100000, max: 100000 }), { minLength: 1, maxLength: 20 }),
     fc.integer({ min: -1000000, max: 1000000 }),
