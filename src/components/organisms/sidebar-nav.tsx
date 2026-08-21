@@ -14,6 +14,7 @@ import {
   LogOut,
   Upload,
   Settings,
+  Tag,
 } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
 import {
@@ -57,6 +58,7 @@ const NAV_GROUPS: { label: string | null; items: NavItem[] }[] = [
     label: "Planning",
     items: [
       { href: "/budgets", label: "Budgets", icon: Wallet },
+      { href: "/categories", label: "Categories", icon: Tag },
       { href: "/bills", label: "Bills", icon: Receipt },
       { href: "/reports", label: "Reports", icon: BarChart3 },
     ],

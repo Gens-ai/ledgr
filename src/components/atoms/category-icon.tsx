@@ -96,6 +96,9 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
   zap: Zap,
 };
 
+/** Kebab-case icon names available in the picker — keys of CATEGORY_ICONS. */
+export const CATEGORY_ICON_NAMES = Object.keys(CATEGORY_ICONS);
+
 /**
  * Renders a category or category-group icon from its stored lucide name,
  * falling back to a generic Tag for missing or unrecognized names.
