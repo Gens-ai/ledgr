@@ -29,6 +29,7 @@ export async function createLinkToken() {
       optional_products: [Products.Investments],
       country_codes: [CountryCode.Us],
       language: "en",
+      transactions: { days_requested: 730 },
       ...(process.env.PLAID_WEBHOOK_URL
         ? { webhook: process.env.PLAID_WEBHOOK_URL }
         : {}),
