@@ -385,6 +385,25 @@ describe("getCashFlow", () => {
     expect(thisMonthData).toBeDefined();
     expect(thisMonthData!.income).toBe(150000);
   });
+
+  it("months='all' includes transactions with no lower date bound", async () => {
+    const { householdId } = await insertHousehold(db);
+    const { accountId } = await insertAccount(db, householdId);
+
+    await insertTransaction(db, householdId, accountId, {
+      date: "2020-01-15",
+      normalizedAmount: -1000,
+      amount: 1000,
+    });
+
+    const bounded = await getCashFlow(householdId, 3, db);
+    expect(bounded.find((r) => r.month === "2020-01")).toBeUndefined();
+
+    const unbounded = await getCashFlow(householdId, "all", db);
+    const oldMonth = unbounded.find((r) => r.month === "2020-01");
+    expect(oldMonth).toBeDefined();
+    expect(oldMonth!.expenses).toBe(1000);
+  });
 });
 
 describe("getRecentTransactions", () => {

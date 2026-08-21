@@ -61,6 +61,26 @@ export function rangeToDateBounds(range: string): { from: string | null; to: str
   }
 }
 
+/** Maps a DateRangeSelector value to a month count for monthly-granularity
+ * series (e.g. getCashFlow) — the same ranges Net Worth uses for daily
+ * points, reinterpreted as "last N months" instead of "last N days". */
+export function rangeToMonths(range: string): number | "all" {
+  switch (range) {
+    case "1M":
+      return 1;
+    case "3M":
+      return 3;
+    case "6M":
+      return 6;
+    case "1Y":
+      return 12;
+    case "All":
+      return "all";
+    default:
+      return 6;
+  }
+}
+
 export function monthBounds(monthStr: string): { from: string; to: string } {
   const [year, month] = monthStr.split("-").map(Number);
   const lastDay = new Date(year, month, 0).getDate();

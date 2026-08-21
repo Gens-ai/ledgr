@@ -22,6 +22,9 @@ interface NetWorthAreaChartProps {
   height?: number;
   mode?: "multi" | "single";
   seriesName?: string;
+  color?: string;
+  dateFormatter?: (date: string) => string;
+  emptyMessage?: string;
 }
 
 interface TooltipEntry {
@@ -32,11 +35,21 @@ interface TooltipEntry {
 
 const AXIS_TICK = { fontSize: 11, fill: "var(--muted-foreground)" };
 
-function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: TooltipEntry[]; label?: string }) {
+function CustomTooltip({
+  active,
+  payload,
+  label,
+  dateFormatter,
+}: {
+  active?: boolean;
+  payload?: TooltipEntry[];
+  label?: string;
+  dateFormatter: (date: string) => string;
+}) {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-md border bg-popover px-3 py-2 text-sm shadow-md">
-      <p className="font-medium">{formatDateShort(label ?? "")}</p>
+      <p className="font-medium">{dateFormatter(label ?? "")}</p>
       {payload.map((entry: TooltipEntry) => (
         <p key={entry.name} className="tabular-nums" style={{ color: entry.color }}>
           {entry.name}: {centsToDisplay(entry.value)}
@@ -46,11 +59,21 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
   );
 }
 
-export function NetWorthAreaChart({ data, mode = "multi", seriesName = "Value" }: NetWorthAreaChartProps) {
+export function NetWorthAreaChart({
+  data,
+  mode = "multi",
+  seriesName = "Value",
+  color = POSITIVE_COLOR,
+  dateFormatter = formatDateShort,
+  emptyMessage,
+}: NetWorthAreaChartProps) {
   if (data.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-        {mode === "single" ? "Portfolio history will appear after your accounts sync." : "Net worth history will appear after your accounts sync."}
+        {emptyMessage ??
+          (mode === "single"
+            ? "Portfolio history will appear after your accounts sync."
+            : "Net worth history will appear after your accounts sync.")}
       </div>
     );
   }
@@ -61,12 +84,12 @@ export function NetWorthAreaChart({ data, mode = "multi", seriesName = "Value" }
         <ComposedChart data={data as ChartDataPoint[]} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
           <defs>
             <linearGradient id="portfolioGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={POSITIVE_COLOR} stopOpacity={0.25} />
-              <stop offset="100%" stopColor={POSITIVE_COLOR} stopOpacity={0} />
+              <stop offset="0%" stopColor={color} stopOpacity={0.25} />
+              <stop offset="100%" stopColor={color} stopOpacity={0} />
             </linearGradient>
           </defs>
           <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis dataKey="date" tickFormatter={formatDateShort} tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={48} />
+          <XAxis dataKey="date" tickFormatter={dateFormatter} tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={48} />
           <YAxis
             tickFormatter={centsToCompact}
             tick={AXIS_TICK}
@@ -76,13 +99,13 @@ export function NetWorthAreaChart({ data, mode = "multi", seriesName = "Value" }
             tickCount={4}
             domain={["auto", "auto"]}
           />
-          <Tooltip content={<CustomTooltip />} />
+          <Tooltip content={<CustomTooltip dateFormatter={dateFormatter} />} />
           <Area
             type="monotone"
             dataKey="value"
             name={seriesName}
             fill="url(#portfolioGradient)"
-            stroke={POSITIVE_COLOR}
+            stroke={color}
             strokeWidth={2}
           />
         </ComposedChart>
@@ -100,7 +123,7 @@ export function NetWorthAreaChart({ data, mode = "multi", seriesName = "Value" }
           </linearGradient>
         </defs>
         <CartesianGrid vertical={false} stroke="var(--border)" />
-        <XAxis dataKey="date" tickFormatter={formatDateShort} tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={48} />
+        <XAxis dataKey="date" tickFormatter={dateFormatter} tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={48} />
         <YAxis
           tickFormatter={centsToCompact}
           tick={AXIS_TICK}
@@ -110,7 +133,7 @@ export function NetWorthAreaChart({ data, mode = "multi", seriesName = "Value" }
           tickCount={4}
           domain={["auto", "auto"]}
         />
-        <Tooltip content={<CustomTooltip />} />
+        <Tooltip content={<CustomTooltip dateFormatter={dateFormatter} />} />
         <Area
           type="monotone"
           dataKey="netWorth"

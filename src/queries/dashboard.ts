@@ -252,16 +252,19 @@ export interface CashFlowRow {
 
 export async function getCashFlow(
   householdId: string,
-  months = 6,
+  months: number | "all" = 6,
   db: LedgrDb = defaultDb
 ): Promise<CashFlowRow[]> {
   const scoped = scopedQuery(householdId, db);
 
-  const today = todayDateString();
-  const d = new Date(today + "T00:00:00");
-  d.setMonth(d.getMonth() - (months - 1));
-  d.setDate(1);
-  const dateFrom = d.toISOString().slice(0, 10);
+  let dateFrom: string | undefined;
+  if (months !== "all") {
+    const today = todayDateString();
+    const d = new Date(today + "T00:00:00");
+    d.setMonth(d.getMonth() - (months - 1));
+    d.setDate(1);
+    dateFrom = d.toISOString().slice(0, 10);
+  }
 
   // Income/expenses are classified by transaction sign (see shared-conditions.ts)
   // rather than category membership — most income transactions never get
@@ -280,7 +283,7 @@ export async function getCashFlow(
       scoped.where(
         transactions,
         notDeleted(transactions),
-        gte(transactions.date, dateFrom),
+        dateFrom ? gte(transactions.date, dateFrom) : undefined,
         eq(transactions.pending, false),
         eq(transactions.isTransfer, false),
         isNull(transactions.transferPairId)
