@@ -32,6 +32,10 @@ export const categories = pgTable(
     isIncome: boolean("is_income").default(false),
     isSystem: boolean("is_system").default(false),
     sortOrder: integer("sort_order").default(0),
+    /** Immutable seed identifier used to join Plaid PFC codes (see lib/categorization/pfc-map.ts)
+     * to this category — decoupled from `name` so renaming a category in the UI doesn't break
+     * its automatic PFC categorization. Null for categories never targeted by the PFC map. */
+    pfcSeedKey: text("pfc_seed_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [

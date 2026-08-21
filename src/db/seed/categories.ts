@@ -127,6 +127,7 @@ export async function seedDefaultCategories(
         isIncome: cat.isIncome,
         isSystem: true,
         sortOrder: ci,
+        pfcSeedKey: cat.name,
       });
     }
   }
