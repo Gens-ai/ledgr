@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { AlertCircle, Loader2, RefreshCw, Sparkles, ThumbsUp, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -32,6 +32,7 @@ export function SavingsAdvisorPanel({ scope, active }: SavingsAdvisorPanelProps)
   const [suggestionState, setSuggestionState] = useState<"new" | "dismissed" | "acted">("new");
   const [historyKey, setHistoryKey] = useState(0);
   const [isPending, startTransition] = useTransition();
+  const hasAutoRunRef = useRef(false);
 
   function run(deals: boolean) {
     setStatus("loading");
@@ -51,7 +52,17 @@ export function SavingsAdvisorPanel({ scope, active }: SavingsAdvisorPanelProps)
   }
 
   useEffect(() => {
-    if (!active || status !== "idle") return;
+    if (!active) {
+      hasAutoRunRef.current = false;
+      return;
+    }
+    // Guards against React Strict Mode's dev-only double-invocation of this
+    // effect, which otherwise fires two concurrent getSavingsSuggestionsAction
+    // calls — the second one lands after the first has already persisted a
+    // row, hits the rate limit, and its error state clobbers the first
+    // call's real results.
+    if (hasAutoRunRef.current || status !== "idle") return;
+    hasAutoRunRef.current = true;
     // Deferred to a microtask so the initial fetch's setState isn't called
     // synchronously from the effect body itself (react-hooks/set-state-in-effect).
     Promise.resolve().then(() => run(false));
