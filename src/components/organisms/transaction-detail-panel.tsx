@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AmountDisplay } from "@/components/atoms/amount-display";
 import { EditableText } from "@/components/molecules/editable-text";
 import { CategoryPill } from "@/components/molecules/category-pill";
+import { SavingsAdvisorButton } from "@/components/molecules/savings-advisor-button";
 import { TransactionIdentityHeader } from "@/components/molecules/transaction-identity-header";
 import { SplitEditor } from "@/components/molecules/split-editor";
 import { TransactionMetadata } from "@/components/molecules/transaction-metadata";
@@ -88,9 +89,14 @@ export function TransactionDetailPanel({
         >
           Transaction Details
         </h2>
-        <Button variant="ghost" size="icon" className="size-7" onClick={onClose}>
-          <X className="size-4" />
-        </Button>
+        <div className="flex items-center gap-0.5">
+          {!txn.isTransfer && (
+            <SavingsAdvisorButton scope={{ type: "transaction", id: txn.id }} scopeLabel={txn.name} />
+          )}
+          <Button variant="ghost" size="icon" className="size-7" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </div>
       </div>
 
       <div className="p-4 space-y-4">

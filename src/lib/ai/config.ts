@@ -1,5 +1,5 @@
-import type { LanguageModel } from "ai";
-import { createUserModel, type AiProvider, type ProviderConfig } from "./provider";
+import type { LanguageModel, Tool } from "ai";
+import { createUserModel, createUserSearchTool, type AiProvider, type ProviderConfig } from "./provider";
 
 const VALID_PROVIDERS: AiProvider[] = ["openai", "anthropic", "google", "custom"];
 
@@ -22,6 +22,13 @@ export function getAiConfig(): ProviderConfig | null {
   if (!apiKey && !isCustom) {
     console.warn(
       "[ledgr] AI_PROVIDER and AI_MODEL are set but AI_API_KEY is missing — AI features disabled",
+    );
+    return null;
+  }
+
+  if (isCustom && !process.env.AI_BASE_URL) {
+    console.warn(
+      "[ledgr] AI_PROVIDER=custom requires AI_BASE_URL to be set — AI features disabled",
     );
     return null;
   }
@@ -52,4 +59,20 @@ export function createAiModel(): LanguageModel | null {
   const config = getAiConfig();
   if (!config) return null;
   return createUserModel(config);
+}
+
+/** The household's provider's hosted web-search tool, if it has one and AI
+ * is configured — see createUserSearchTool() for which providers qualify. */
+export function createAiSearchTool(): Tool | null {
+  const config = getAiConfig();
+  if (!config) return null;
+  return createUserSearchTool(config);
+}
+
+/** Whether the configured provider has a hosted web-search tool at all —
+ * used to gate the Savings Advisor's deals opt-in in Settings without
+ * actually constructing the tool. */
+export function hasWebSearchProvider(): boolean {
+  const config = getAiConfig();
+  return config !== null && config.aiProvider !== "custom";
 }

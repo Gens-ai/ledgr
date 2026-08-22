@@ -43,6 +43,13 @@
       "when": 1787303998664,
       "tag": "0005_faulty_ultimatum",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787306778475,
+      "tag": "0006_wide_omega_sentinel",
+      "breakpoints": true
     }
   ]
 }

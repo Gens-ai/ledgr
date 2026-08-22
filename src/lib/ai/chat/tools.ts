@@ -14,8 +14,11 @@ import { eq, and, gte, lte, like, desc } from "drizzle-orm";
 import { scopedQuery } from "@/lib/scoped-query";
 import { notDeleted } from "@/lib/query-helpers";
 import { categoryLabel, resolvedCategoryLabel } from "@/lib/labels";
+import { centsToDisplay } from "@/lib/money";
+import { getSavingsSuggestions } from "@/lib/ai/savings/advisor";
+import { SAVINGS_SCOPE_TYPES } from "@/lib/ai/savings/types";
 
-export function financialTools(householdId: string) {
+export function financialTools(householdId: string, userId: string) {
   const scoped = scopedQuery(householdId);
 
   return {
@@ -290,6 +293,46 @@ export function financialTools(householdId: string) {
         }
 
         return results;
+      },
+    }),
+
+    getSavingsSuggestions: tool({
+      description:
+        "Find specific, evidence-based ways to save money — e.g. eating out less at a frequently-visited " +
+        "restaurant, or cancelling an underused subscription. Grounded in the household's real transaction " +
+        "history, not generic advice. Use when the user asks how to save money, cut spending, or find deals " +
+        "on a merchant, category, or their overall spending. Only pass includeDeals=true if the user explicitly " +
+        "asks about deals, coupons, or current sales.",
+      inputSchema: z.object({
+        scopeType: z.enum(SAVINGS_SCOPE_TYPES).describe(
+          "What to analyze: \"merchant\" or \"category\" (with scopeId), or \"overall\" for the household's whole spending",
+        ),
+        scopeId: z.string().optional().describe("The merchant or category id, required unless scopeType is \"overall\""),
+        includeDeals: z.boolean().optional().describe("Also search the web for current deals — only if the user asked for this"),
+      }),
+      execute: async ({ scopeType, scopeId, includeDeals }) => {
+        const result = await getSavingsSuggestions(
+          householdId,
+          userId,
+          { type: scopeType, id: scopeId },
+          { includeDeals },
+        );
+        if ("error" in result) return result;
+
+        return {
+          scope: result.scopeLabel,
+          windowDays: result.windowDays,
+          dealsIncluded: result.dealsIncluded,
+          suggestions: result.suggestions.map((s) => ({
+            title: s.title,
+            detail: s.detail,
+            kind: s.kind,
+            estMonthlySavings: centsToDisplay(s.estMonthlySavingsCents),
+            effort: s.effort,
+            timeCostMinutes: s.timeCostMinutes,
+            confidence: s.confidence,
+          })),
+        };
       },
     }),
   };
