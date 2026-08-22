@@ -7,7 +7,7 @@ import { DemoModeToggle } from "@/components/molecules/demo-mode-toggle";
 import { PasskeysManager } from "@/components/organisms/passkeys-manager";
 import { DangerZone } from "@/components/organisms/danger-zone";
 import { isDemoMode } from "@/lib/demo-mode";
-import { hasWebSearchProvider } from "@/lib/ai/config";
+import { hasWebSearchProvider, isAiConfigured } from "@/lib/ai/config";
 
 export default async function SettingsPage() {
   const session = await getSession();
@@ -36,6 +36,7 @@ export default async function SettingsPage() {
       <SavingsSettingsForm
         initialEnabled={dealsSettings.enabled}
         initialLocation={dealsSettings.location}
+        aiConfigured={isAiConfigured()}
         hasWebSearchProvider={hasWebSearchProvider()}
       />
       <DangerZone />

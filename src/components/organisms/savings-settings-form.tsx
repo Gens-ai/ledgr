@@ -11,10 +11,16 @@ import { Input } from "@/components/ui/input";
 interface SavingsSettingsFormProps {
   initialEnabled: boolean;
   initialLocation: string | null;
+  aiConfigured: boolean;
   hasWebSearchProvider: boolean;
 }
 
-export function SavingsSettingsForm({ initialEnabled, initialLocation, hasWebSearchProvider }: SavingsSettingsFormProps) {
+export function SavingsSettingsForm({
+  initialEnabled,
+  initialLocation,
+  aiConfigured,
+  hasWebSearchProvider,
+}: SavingsSettingsFormProps) {
   const [enabled, setEnabled] = useState(initialEnabled);
   const [location, setLocation] = useState(initialLocation ?? "");
   const { isPending, execute } = useActionTransition();
@@ -56,8 +62,9 @@ export function SavingsSettingsForm({ initialEnabled, initialLocation, hasWebSea
         </div>
         {!hasWebSearchProvider && (
           <p className="text-xs text-muted-foreground">
-            Your configured AI provider doesn&apos;t support hosted web search (only Anthropic, OpenAI, and Google
-            do) — deals search isn&apos;t available.
+            {aiConfigured
+              ? "Your configured AI provider doesn't support hosted web search (only Anthropic, OpenAI, and Google do) — deals search isn't available."
+              : "AI isn't configured for this instance — set AI_PROVIDER and AI_MODEL in your .env file to enable the Savings Advisor."}
           </p>
         )}
         <div className="space-y-1.5">
