@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { BudgetSummaryBar } from "@/components/atoms/budget-summary-bar";
 import { BudgetGroupSection } from "@/components/organisms/budget-group-section";
 import { AmountDisplay } from "@/components/atoms/amount-display";
+import { SavingsAdvisorButton } from "@/components/molecules/savings-advisor-button";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import type { BudgetMonth } from "@/queries/budgets";
 
@@ -86,10 +87,17 @@ export function BudgetTable({ data }: BudgetTableProps) {
               {data.unbudgeted.categories.map((cat) => (
                 <TableRow key={cat.categoryId} className="hover:bg-transparent">
                   <TableCell className="py-2 px-3 text-sm text-muted-foreground">
-                    {cat.categoryName}
-                    {cat.groupName && (
-                      <span className="text-xs ml-1">({cat.groupName})</span>
-                    )}
+                    <span className="inline-flex items-center gap-1.5">
+                      {cat.categoryName}
+                      {cat.groupName && (
+                        <span className="text-xs ml-1">({cat.groupName})</span>
+                      )}
+                      <SavingsAdvisorButton
+                        scope={{ type: "category", id: cat.categoryId }}
+                        scopeLabel={cat.categoryName}
+                        className="size-5 opacity-60 hover:opacity-100"
+                      />
+                    </span>
                   </TableCell>
                   <TableCell className="py-2 px-3 text-right">
                     <AmountDisplay amount={cat.spent} absolute className="text-xs" />
