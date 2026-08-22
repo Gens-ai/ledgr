@@ -51,7 +51,4 @@ pnpm-debug.log*
 playwright-report/
 test-results/
 .stryker-tmp/
-docs/*
-!docs/images/
-!docs/issues/
 .gitnexus

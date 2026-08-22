@@ -7,9 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Ledgr** — a self-hostable, open-source personal finance app (AGPLv3) with automatic bank sync via Plaid and a built-in MCP server that exposes the data to AI agents (Claude, Cursor, etc.) over OAuth-gated tools.
 
 **Docs:**
-- `docs/superpowers/specs/` — per-feature design specs. There is no single top-level architecture spec; each doc covers one feature (demo mode, the SQLite→Postgres migration, AI-settings env migration, mobile responsiveness, Plaid relink/account resurrection).
-- `docs/vision.md` and `docs/gaps.md` — an outside-in evaluation of the shipped code against the README/vision, listing where a feature is only partially wired up (e.g. the rule-based categorization tier is fully implemented in the matching engine but nothing in the app ever writes a `category_rules` row, so it never fires). Check `gaps.md` before assuming a README-advertised feature is completely implemented.
-- `docs/issues/` — open issues tracked as one markdown file per issue (`ISSUE-NNN-slug.md`); several mirror `gaps.md` findings.
+- `docs/superpowers/specs/` — per-feature design specs. There is no single top-level architecture spec; each doc covers one feature (demo mode, the SQLite→Postgres migration, AI-settings env migration, mobile responsiveness, Plaid relink/account resurrection, the Savings Advisor).
+- `docs/vision.md` and `docs/planning/gaps.md` — an outside-in evaluation of the shipped code against the README/vision, listing where a feature is only partially wired up (e.g. the rule-based categorization tier is fully implemented in the matching engine but nothing in the app ever writes a `category_rules` row, so it never fires). Check `docs/planning/gaps.md` before assuming a README-advertised feature is completely implemented.
+- `docs/planning/ideas.md` — a ranked brainstorm of new-feature ideas from the same evaluation, ranked by build order.
+- `docs/issues/` — open issues tracked as one markdown file per issue (`ISSUE-NNN-slug.md`); several mirror `docs/planning/gaps.md` findings. `docs/roadmap.md` sequences the categorization-focused subset that's been filed as issues.
 
 ## Stack
 
@@ -139,7 +140,9 @@ ledgr/
 │   └── install-migrate-deps.mjs  # Installs migration deps from package.json versions
 ├── docs/
 │   ├── superpowers/specs/        # Per-feature design specs
-│   ├── vision.md, gaps.md        # Evaluation notes: what's fully wired up vs. README-only
+│   ├── vision.md                 # Evaluation notes: what's fully wired up vs. README-only
+│   ├── planning/                 # gaps.md (evaluation) + ideas.md (ranked feature brainstorm)
+│   ├── roadmap.md                # Priority sequencing for issues filed from planning/gaps.md
 │   └── issues/                   # Open issues, one file per issue
 ├── docker-compose.yml            # Postgres 18 + app services
 ├── Dockerfile                    # Multi-stage production build (Node 24 LTS)
@@ -224,7 +227,7 @@ Enforcement layers, fast → slow: `test:changed`/watch (you, locally) → pre-c
 
 Each tier sets `categorySource` on the transaction (`"rule"` | `"merchant_default"` | `"pfc"` | `"ai"` | `"manual"`) to track provenance. Manual user edits always set `"manual"` and are never overwritten by lower tiers.
 
-> **Known gap:** tier 1 is implemented and correctly checked first in `categorization/engine.ts`, but nothing in the app ever writes a `category_rules` row (no UI, no action) — see `docs/gaps.md` #1 and `docs/issues/ISSUE-002-*`. In practice every household only ever gets tiers 2–4. Similarly, manually recategorizing a transaction only updates that one row — it doesn't update `merchants.categoryId` or create a rule, so it doesn't generalize (`docs/gaps.md` #3, `ISSUE-004-*`).
+> **Known gap:** tier 1 is implemented and correctly checked first in `categorization/engine.ts`, but nothing in the app ever writes a `category_rules` row (no UI, no action) — see `docs/planning/gaps.md` and `docs/issues/ISSUE-002-*`. In practice every household only ever gets tiers 2–4. Single-transaction recategorization now also updates `merchants.categoryId` (`docs/issues/ISSUE-004-*`, resolved), but bulk recategorization (`bulkUpdateCategory`) still doesn't propagate to either tier — see `docs/planning/gaps.md`.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

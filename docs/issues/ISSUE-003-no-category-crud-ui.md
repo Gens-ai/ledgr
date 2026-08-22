@@ -1,8 +1,9 @@
 ---
 id: ISSUE-003
 title: No UI (or action) to create, rename, or delete categories
-status: open
+status: resolved
 created: 2026-08-20
+resolved: 2026-08-21
 ---
 
 ## Summary
@@ -20,3 +21,7 @@ Categories are a fixed, hardcoded seed list per household with no way to add, re
 ## Findings
 
 - **2026-08-20:** Confirmed by searching the full route tree and action files, and by reading the MCP category tool registration (`src/lib/mcp/tools/categories.ts`) — only `list_categories` (read) is registered.
+
+## Resolution
+
+- **2026-08-21:** `src/actions/categories.ts` now exposes full CRUD (`createCategoryGroup`/`updateCategoryGroup`/`deleteCategoryGroup`, `createCategory`/`updateCategory`/`deleteCategory`, with dependent-row reassignment on delete), backed by a `(dashboard)/categories` page and its own settings entry point — commit `69b9172`, integration coverage in `tests/integration/category-actions.test.ts`. The MCP interface still has no `create_category`/`update_category`/`delete_category` tool (`list_categories` remains the only registered category tool) — that's outside this issue's literal scope (UI/action) but worth its own follow-up issue if MCP write-parity for categories is wanted.
