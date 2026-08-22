@@ -13,7 +13,7 @@ Ledgr already computes everything needed to answer "where could I actually save 
 - The Reports "Spending" tab, which shows *what* was spent, not what to *do* about it.
 - The AI chat, which can answer ad-hoc questions but has no tool that reasons about savings opportunities specifically.
 
-The ask (docs/gaps.md-style, from a live product review) was for something closer to a real advisor: *"you go out to eat regularly — cooking at home twice a month instead would save about $9 a visit."* Specific, evidence-based, dollar-quantified — not "spend less on dining out."
+The ask (docs/planning/gaps.md-style, from a live product review) was for something closer to a real advisor: *"you go out to eat regularly — cooking at home twice a month instead would save about $9 a visit."* Specific, evidence-based, dollar-quantified — not "spend less on dining out."
 
 A secondary ask was a **deals finder**: search for current sales/coupons near the household for merchants and staples they actually buy. This is architecturally distinct — it requires the open web and (optionally) a location — so it's treated as an opt-in extension of the core advisor, not a separate feature.
 
@@ -115,7 +115,7 @@ All six converge on the same `getSavingsSuggestions()` call, so behavior and gro
 | MCP | `get_savings_suggestions` tool (`ledgr:read`) | client-chosen |
 | MCP (agent-side reasoning) | `get_spending_profile` tool (`ledgr:read`) | client-chosen |
 
-There is no merchant detail page in Ledgr yet, so a dedicated merchant-scope UI trigger was out of scope for v1 — `merchant` scope is fully implemented and reachable via chat and MCP today. This is a natural extension point if/when a merchant page is built (it would also help the categorization learning-loop gap tracked separately in `docs/gaps.md`).
+There is no merchant detail page in Ledgr yet, so a dedicated merchant-scope UI trigger was out of scope for v1 — `merchant` scope is fully implemented and reachable via chat and MCP today. This is a natural extension point if/when a merchant page is built (it would also help the categorization learning-loop gap tracked separately in `docs/planning/gaps.md`).
 
 **Rate limiting**: a 60-second cooldown per exact `(household, scopeType, scopeId)` combination, mirroring `lib/mcp/rate-limit.ts`'s sync cooldown — a different scope isn't blocked while one is cooling down.
 
