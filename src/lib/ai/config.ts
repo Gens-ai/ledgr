@@ -26,6 +26,13 @@ export function getAiConfig(): ProviderConfig | null {
     return null;
   }
 
+  if (isCustom && !process.env.AI_BASE_URL) {
+    console.warn(
+      "[ledgr] AI_PROVIDER=custom requires AI_BASE_URL to be set — AI features disabled",
+    );
+    return null;
+  }
+
   const rawThreshold = parseFloat(process.env.AI_CONFIDENCE_THRESHOLD ?? "0.7");
   const confidenceThreshold = Math.min(0.9, Math.max(0.5, rawThreshold));
 

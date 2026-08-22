@@ -37,6 +37,13 @@ export function createUserModel(config: ProviderConfig): LanguageModel {
         baseURL: config.aiBaseUrl,
         apiKey: config.aiApiKey || "none",
         name: "custom",
+        // Without this, the AI SDK silently downgrades any JSON-schema
+        // response format to plain `json_object` mode (or drops it
+        // entirely) — the model then free-writes prose instead of the
+        // schema-constrained JSON that Output.object() expects, and
+        // parsing throws. Most OpenAI-compatible endpoints (OpenRouter,
+        // vLLM, LM Studio, Ollama) support strict JSON schema responses.
+        supportsStructuredOutputs: true,
       });
       return provider(config.aiModel);
     }
