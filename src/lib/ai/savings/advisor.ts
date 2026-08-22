@@ -134,6 +134,7 @@ export async function getSavingsSuggestions(
       raw = output?.suggestions ?? [];
     } catch (e) {
       console.error("Savings advisor suggestion generation failed:", e);
+      return { error: "The AI provider failed to generate suggestions. Check your AI configuration and try again." };
     }
   }
 
@@ -142,7 +143,6 @@ export async function getSavingsSuggestions(
     const dealsSettings = await getDealsSettings(userId, db);
     const searchTool = dealsSettings.enabled ? createUserSearchTool(config) : null;
     if (searchTool) {
-      dealsIncluded = true;
       try {
         const { output } = await generateText({
           model,
@@ -153,6 +153,7 @@ export async function getSavingsSuggestions(
           prompt: buildSavingsPrompt(profile, { includeDeals: true, location: dealsSettings.location }),
         });
         raw = [...raw, ...(output?.suggestions ?? [])];
+        dealsIncluded = true;
       } catch (e) {
         console.error("Savings advisor deals search failed:", e);
       }
