@@ -9,6 +9,9 @@ export default defineConfig({
   reporter: "html",
 
   use: {
+    // Keep Chromium's OS sandbox on. Playwright disables it by default, which
+    // would let a browser exploit on any page under test run as our user.
+    launchOptions: { chromiumSandbox: true },
     baseURL: "http://localhost:3000",
     trace: "on-first-retry",
     screenshot: "only-on-failure",
