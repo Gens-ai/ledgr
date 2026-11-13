@@ -1,4 +1,4 @@
-import { eq, gte, lte, and, desc, inArray, isNull, sql } from "drizzle-orm";
+import { eq, gte, lte, lt, and, desc, inArray, sql } from "drizzle-orm";
 export { getInvestmentsSummary } from "./investments";
 import { db as defaultDb, type LedgrDb } from "@/db";
 import {
@@ -7,8 +7,8 @@ import {
   transactions,
 } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
-import { notDeleted } from "@/lib/query-helpers";
-import { isIncome as isIncomeCondition } from "@/queries/shared-conditions";
+import { notDeleted, notHidden } from "@/lib/query-helpers";
+import { includedInSpending, incomeTotalsRule } from "@/queries/shared-conditions";
 import { aggregateSpending, enrichSpendingMap } from "@/lib/spending-helpers";
 import type { ReportFilters } from "@/queries/reports";
 import { classifyAccountType } from "@/lib/account-utils";
@@ -19,6 +19,11 @@ import { baseTransactionQuery, type TransactionRow } from "./transactions";
 
 export interface DashboardSummary {
   netWorth: number;
+  /** The two sides netWorth is the difference of. Both were already summed to
+   *  produce it; the hero shows them so a net worth reads as a position rather
+   *  than a bare number. Liabilities are negative, per schema/accounts.ts. */
+  assets: number;
+  liabilities: number;
   monthlyIncome: number;
   monthlyExpenses: number;
   monthlyNet: number;
@@ -84,21 +89,25 @@ export async function getDashboardSummary(
     month ?? (await getLatestActivityMonth(householdId, db)) ?? getCurrentMonth();
   const { from: dateFrom, to: dateTo } = monthBounds(effectiveMonth);
 
-  // Sum income/expenses in SQL rather than pulling every month row into JS.
-  // Mirrors the prior logic: amount >= 0 → income, amount < 0 → expenses.
+  // Income/expenses by the shared income-totals rule (shared-conditions.ts:
+  // credits are income, debits outside income categories are expenses), the
+  // same rule as getCashFlow and the Reports Total Income/Expenses tiles.
+  const { isIncome, isExpense } = await incomeTotalsRule(householdId, db);
   const [totals] = await db
     .select({
-      income: sql<number>`COALESCE(SUM(CASE WHEN ${transactions.normalizedAmount} > 0 THEN ${transactions.normalizedAmount} ELSE 0 END), 0)`.mapWith(Number),
-      expenses: sql<number>`COALESCE(SUM(CASE WHEN ${transactions.normalizedAmount} < 0 THEN ABS(${transactions.normalizedAmount}) ELSE 0 END), 0)`.mapWith(Number),
+      income: sql<number>`COALESCE(SUM(CASE WHEN ${isIncome} THEN ${transactions.normalizedAmount} ELSE 0 END), 0)`.mapWith(Number),
+      expenses: sql<number>`COALESCE(SUM(CASE WHEN ${isExpense} THEN ABS(${transactions.normalizedAmount}) ELSE 0 END), 0)`.mapWith(Number),
     })
     .from(transactions)
     .where(
       scoped.where(
         transactions,
         notDeleted(transactions),
+        notHidden(transactions),
         gte(transactions.date, dateFrom),
         lte(transactions.date, dateTo),
-        eq(transactions.pending, false)
+        eq(transactions.pending, false),
+        await includedInSpending(householdId, db),
       )
     );
 
@@ -106,7 +115,11 @@ export async function getDashboardSummary(
   const monthlyExpenses = totals?.expenses ?? 0;
 
   return {
-    netWorth: totalAssets - totalLiabilities,
+    // Plain sum — liability balances are already stored negative, so
+    // subtracting them would add the debt. See schema/accounts.ts.
+    netWorth: totalAssets + totalLiabilities,
+    assets: totalAssets,
+    liabilities: totalLiabilities,
     monthlyIncome,
     monthlyExpenses,
     monthlyNet: monthlyIncome - monthlyExpenses,
@@ -115,11 +128,29 @@ export async function getDashboardSummary(
 
 // ─── getNetWorthHistory ─────────────────────────────────────────────────────
 
-export interface NetWorthPoint {
+/**
+ * A net-worth series point without coverage information. The reports series
+ * (getReportNetWorthHistory) produces this shape; it has the same leading-gap
+ * exposure as the dashboard, but reporting coverage there is separate work.
+ */
+export interface NetWorthSeriesPoint {
   date: string;
   assets: number;
   liabilities: number;
   netWorth: number;
+}
+
+export interface NetWorthPoint extends NetWorthSeriesPoint {
+  /**
+   * How many tracked accounts had a known balance on this date, out of
+   * totalAccounts. Carry-forward fills gaps *between* snapshots, but an account
+   * whose first-ever snapshot lands mid-window contributes $0 to every earlier
+   * point — there is nothing to carry backward. Where covered < total this
+   * figure is a partial sum, not net worth, and callers must not present it (or
+   * a delta computed across it) as though it were.
+   */
+  coveredAccounts: number;
+  totalAccounts: number;
 }
 
 export async function getNetWorthHistory(
@@ -144,38 +175,89 @@ export async function getNetWorthHistory(
   const assetIds = accountIds.filter(
     (id) => classifyAccountType(accountTypeMap.get(id) ?? "other") === "asset",
   );
-  const liabilityIds = accountIds.filter(
-    (id) => classifyAccountType(accountTypeMap.get(id) ?? "other") === "liability",
-  );
-
-  let result: NetWorthPoint[] = [];
+  // classifyAccountType is total over asset|liability, so anything not an
+  // asset is a liability — no separate liability list needed.
+  const result: NetWorthPoint[] = [];
   if (accountIds.length > 0) {
-    const inAssets = assetIds.length > 0 ? inArray(balanceHistory.accountId, assetIds) : sql`false`;
-    const inLiabilities =
-      liabilityIds.length > 0 ? inArray(balanceHistory.accountId, liabilityIds) : sql`false`;
+    const assetIdSet = new Set(assetIds);
+
+    // Last known balance per account, carried across dates. Snapshot coverage
+    // is uneven in practice — balance reconstruction fills depository accounts
+    // densely but leaves investment accounts with only occasional rows — so a
+    // date with no row for an account means "unchanged", never "worth zero".
+    // Summing only the rows present on each date silently zeroes those
+    // accounts and produces a wildly wrong series.
+    const lastBalanceByAccount = new Map<string, number>();
+
+    // Seed from the most recent balance *before* the window, so an account
+    // whose only snapshot predates dateFrom still contributes to every point.
+    if (dateFrom) {
+      const seeds = await db
+        .selectDistinctOn([balanceHistory.accountId], {
+          accountId: balanceHistory.accountId,
+          balance: balanceHistory.balance,
+        })
+        .from(balanceHistory)
+        .where(
+          and(
+            inArray(balanceHistory.accountId, accountIds),
+            lt(balanceHistory.date, dateFrom),
+          ),
+        )
+        .orderBy(balanceHistory.accountId, desc(balanceHistory.date));
+
+      for (const seed of seeds) {
+        lastBalanceByAccount.set(seed.accountId, seed.balance ?? 0);
+      }
+    }
 
     const conditions = [inArray(balanceHistory.accountId, accountIds)];
     if (dateFrom) {
       conditions.push(gte(balanceHistory.date, dateFrom));
     }
 
+    // Row volume here is accounts x snapshot-days, small enough that folding
+    // in JS is clearer than the SQL gap-fill equivalent.
     const rows = await db
       .select({
         date: balanceHistory.date,
-        assets: sql<number>`COALESCE(SUM(CASE WHEN ${inAssets} THEN ${balanceHistory.balance} ELSE 0 END), 0)`.mapWith(Number),
-        liabilities: sql<number>`COALESCE(SUM(CASE WHEN ${inLiabilities} THEN ${balanceHistory.balance} ELSE 0 END), 0)`.mapWith(Number),
+        accountId: balanceHistory.accountId,
+        balance: balanceHistory.balance,
       })
       .from(balanceHistory)
       .where(and(...conditions))
-      .groupBy(balanceHistory.date)
       .orderBy(balanceHistory.date);
 
-    result = rows.map(({ date, assets, liabilities }) => ({
-      date,
-      assets,
-      liabilities,
-      netWorth: assets - liabilities,
-    }));
+    const byDate = new Map<string, { accountId: string; balance: number }[]>();
+    for (const row of rows) {
+      const bucket = byDate.get(row.date) ?? [];
+      bucket.push({ accountId: row.accountId, balance: row.balance ?? 0 });
+      byDate.set(row.date, bucket);
+    }
+
+    for (const date of [...byDate.keys()].sort()) {
+      for (const row of byDate.get(date)!) {
+        lastBalanceByAccount.set(row.accountId, row.balance);
+      }
+
+      let assets = 0;
+      let liabilities = 0;
+      for (const [id, balance] of lastBalanceByAccount) {
+        if (assetIdSet.has(id)) assets += balance;
+        else liabilities += balance;
+      }
+
+      result.push({
+        date,
+        assets,
+        liabilities,
+        netWorth: assets + liabilities,
+        // lastBalanceByAccount only ever gains keys, so its size is exactly the
+        // number of accounts we have *any* balance for as of this date.
+        coveredAccounts: lastBalanceByAccount.size,
+        totalAccounts: accountIds.length,
+      });
+    }
   }
 
   // Synthetic today point from live currentBalance. Only emit it when at least
@@ -204,7 +286,11 @@ export async function getNetWorthHistory(
     date: today,
     assets: todayAssets,
     liabilities: todayLiabilities,
-    netWorth: todayAssets - todayLiabilities,
+    netWorth: todayAssets + todayLiabilities,
+    // Today reads live balances, so coverage is simply how many accounts
+    // report one. An account with a null balance is still not covered.
+    coveredAccounts: accountsWithBalance.length,
+    totalAccounts: allAccounts.length,
   });
 
   return withoutToday;
@@ -266,27 +352,26 @@ export async function getCashFlow(
     dateFrom = d.toISOString().slice(0, 10);
   }
 
-  // Income/expenses are classified by transaction sign (see shared-conditions.ts)
-  // rather than category membership — most income transactions never get
-  // auto-categorized into an income category, which badly undercounts income.
-  const isIncome = isIncomeCondition();
+  // The shared income-totals rule (shared-conditions.ts, sign-based), so each
+  // month here equals the dashboard tiles and the Reports tiles.
+  const { isIncome, isExpense } = await incomeTotalsRule(householdId, db);
   const monthExpr = sql<string>`substring(${transactions.date}, 1, 7)`;
 
   const rows = await db
     .select({
       month: monthExpr,
-      income: sql<number>`COALESCE(SUM(CASE WHEN ${isIncome} THEN ABS(${transactions.normalizedAmount}) ELSE 0 END), 0)`.mapWith(Number),
-      expenses: sql<number>`COALESCE(SUM(CASE WHEN NOT (${isIncome}) AND ${transactions.normalizedAmount} < 0 THEN ABS(${transactions.normalizedAmount}) ELSE 0 END), 0)`.mapWith(Number),
+      income: sql<number>`COALESCE(SUM(CASE WHEN ${isIncome} THEN ${transactions.normalizedAmount} ELSE 0 END), 0)`.mapWith(Number),
+      expenses: sql<number>`COALESCE(SUM(CASE WHEN ${isExpense} THEN ABS(${transactions.normalizedAmount}) ELSE 0 END), 0)`.mapWith(Number),
     })
     .from(transactions)
     .where(
       scoped.where(
         transactions,
         notDeleted(transactions),
+        notHidden(transactions),
         dateFrom ? gte(transactions.date, dateFrom) : undefined,
         eq(transactions.pending, false),
-        eq(transactions.isTransfer, false),
-        isNull(transactions.transferPairId)
+        await includedInSpending(householdId, db),
       )
     )
     .groupBy(monthExpr)
@@ -311,7 +396,7 @@ export async function getRecentTransactions(
 
   const rows = await base
     .joins(db.select(base.select).from(base.from))
-    .where(base.scoped.where(transactions, notDeleted(transactions)))
+    .where(base.scoped.where(transactions, notDeleted(transactions), notHidden(transactions)))
     .orderBy(desc(transactions.date), desc(transactions.id))
     .limit(limit);
 
@@ -321,6 +406,54 @@ export async function getRecentTransactions(
     currency: row.currency ?? "USD",
     pending: Boolean(row.pending),
     reviewed: Boolean(row.reviewed),
+    isHidden: Boolean(row.isHidden),
     hasSplits: false,
   }));
+}
+
+/**
+ * The date from which every tracked account has a known balance, or null when
+ * no account is missing early history.
+ *
+ * Net worth is only net worth once every account contributes. Carry-forward
+ * fills gaps *between* an account's snapshots, but an account whose first-ever
+ * snapshot lands mid-window contributes $0 to every earlier point — so full
+ * coverage begins on the day the *last* account got its first snapshot.
+ *
+ * Computed as an aggregate rather than by reconstructing the series: the range
+ * control needs this on every dashboard load, and building a full-history
+ * series just to read its first covered date would be far more work than
+ * MAX(MIN(date)).
+ */
+export async function getFullCoverageSince(
+  householdId: string,
+  db: LedgrDb = defaultDb,
+): Promise<string | null> {
+  const scoped = scopedQuery(householdId, db);
+
+  const liveAccounts = await db
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(scoped.where(accounts, notDeleted(accounts)));
+
+  if (liveAccounts.length === 0) return null;
+  const ids = liveAccounts.map((a) => a.id);
+
+  const firsts = await db
+    .select({
+      accountId: balanceHistory.accountId,
+      firstDate: sql<string>`MIN(${balanceHistory.date})`,
+    })
+    .from(balanceHistory)
+    .where(inArray(balanceHistory.accountId, ids))
+    .groupBy(balanceHistory.accountId);
+
+  // An account with no history at all is never covered, so no date makes the
+  // series complete. Say so rather than reporting a date that is not true.
+  if (firsts.length < ids.length) return null;
+
+  return firsts.reduce<string | null>(
+    (latest, row) => (latest === null || row.firstDate > latest ? row.firstDate : latest),
+    null,
+  );
 }

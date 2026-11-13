@@ -1,3 +1,5 @@
+/** PFC detailed code → category seed key (`categories.pfc_seed_key`, the
+ * category's original seed name in db/seed/categories.ts) — not its display name. */
 export const PFC_DETAILED_TO_CATEGORY: Record<string, string> = {
   // Income
   INCOME_DIVIDENDS: "Investment Income",

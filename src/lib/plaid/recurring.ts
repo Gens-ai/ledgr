@@ -6,9 +6,10 @@ import {
   type PlaidRecurringStream,
 } from "./schemas";
 import { plaidAmountToCents } from "@/lib/money";
-import { titleCase } from "./utils";
+import { titleCase } from "@/lib/text-utils";
 import type { LedgrDb } from "@/db";
 import { db as defaultDb } from "@/db";
+import { withHousehold } from "@/lib/household-context";
 import {
   recurringTransactions,
   transactions,
@@ -37,22 +38,22 @@ export async function syncRecurringTransactions(
     const client = getPlaidClient();
 
     const itemAccounts = await db
-      .select({ plaidAccountId: accounts.plaidAccountId, id: accounts.id })
+      .select({ externalAccountId: accounts.externalAccountId, id: accounts.id })
       .from(accounts)
       .where(
         and(
           eq(accounts.householdId, householdId),
-          eq(accounts.plaidItemId, plaidItemId),
+          eq(accounts.bankConnectionId, plaidItemId),
         ),
       );
 
     const accountIds = itemAccounts
-      .map((a) => a.plaidAccountId)
+      .map((a) => a.externalAccountId)
       .filter((id): id is string => id !== null);
 
     const plaidToInternalAccount = new Map<string, string>();
     for (const a of itemAccounts) {
-      if (a.plaidAccountId) plaidToInternalAccount.set(a.plaidAccountId, a.id);
+      if (a.externalAccountId) plaidToInternalAccount.set(a.externalAccountId, a.id);
     }
 
     const response = await client.transactionsRecurringGet({
@@ -70,7 +71,7 @@ export async function syncRecurringTransactions(
     const now = new Date();
     const seenStreamIds = new Set<string>();
 
-    const result = await db.transaction(async (tx) => {
+    const result = await withHousehold(householdId, async (tx) => {
       let upserted = 0;
       let deactivated = 0;
 
@@ -169,7 +170,7 @@ export async function syncRecurringTransactions(
             .set({ recurringTransactionId: recurringId, updatedAt: now })
             .where(
               and(
-                inArray(transactions.plaidTransactionId, stream.transaction_ids),
+                inArray(transactions.externalId, stream.transaction_ids),
                 eq(transactions.householdId, householdId),
               ),
             );
@@ -199,7 +200,7 @@ export async function syncRecurringTransactions(
       }
 
       return { upserted, deactivated };
-    });
+    }, db);
 
     return result;
   } catch (err) {

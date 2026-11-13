@@ -2,16 +2,35 @@ import { eq, and, sql, desc, gte, lte, isNull, inArray } from "drizzle-orm";
 import { db as defaultDb, type LedgrDb } from "@/db";
 import { investmentHoldings, holdingsHistory, investmentTransactions, accounts } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
-import { encodeCursor, decodeCursor, sumCol } from "@/lib/query-helpers";
-import { todayDateString } from "@/lib/date-utils";
+import { encodeCursor, decodeCursor, sumCol, countRows } from "@/lib/query-helpers";
+import { todayDateString, previousDateString } from "@/lib/date-utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface PortfolioSummary {
+  /** What the accounts are actually worth: their balances, not the holdings sum. */
   totalValue: number;
+  /** The itemized part. */
+  holdingsValue: number;
+  /** totalValue - holdingsValue: real uninvested cash, or value a connector did not itemize. */
+  cashValue: number;
+  /** Covers only the holdings portion -- it is derived from holdings_history. */
   dayChange: number | null;
+  /** Covers only holdings that actually report a cost basis. */
   totalGainLoss: number;
   totalCostBasis: number;
+  /** Current value of the holdings the gain/loss figure describes, so the UI can state its scope. */
+  gainLossCoverage: number;
+}
+
+export interface AccountReconciliationRow {
+  accountId: string;
+  accountName: string;
+  balance: number;
+  holdingsValue: number;
+  cashValue: number;
+  /** False when the connector returned a balance but itemized nothing. */
+  hasHoldings: boolean;
 }
 
 export interface PortfolioPoint {
@@ -37,6 +56,22 @@ export interface InvestmentHoldingRow {
   gainLossPercent: number | null;
   accountName?: string;
   accountId?: string;
+}
+
+export interface InvestmentsSummaryHolding {
+  ticker: string | null;
+  securityName: string;
+  currentValue: number;
+  gainLossPercent: number | null;
+  /** Share of total portfolio value, 0-100. */
+  share: number;
+}
+
+export interface InvestmentsSummary {
+  totalValue: number;
+  dayChange: number | null;
+  holdingCount: number;
+  topHoldings: InvestmentsSummaryHolding[];
 }
 
 export interface InvTxnRow {
@@ -102,7 +137,17 @@ export async function getPortfolioSummary(
   accIds?: string[],
 ): Promise<PortfolioSummary> {
   const ids = await resolveAccIds(householdId, db, accIds);
-  if (ids.length === 0) return { totalValue: 0, dayChange: null, totalGainLoss: 0, totalCostBasis: 0 };
+  if (ids.length === 0) {
+    return {
+      totalValue: 0,
+      holdingsValue: 0,
+      cashValue: 0,
+      dayChange: null,
+      totalGainLoss: 0,
+      totalCostBasis: 0,
+      gainLossCoverage: 0,
+    };
+  }
 
   const holdings = await db
     .select({
@@ -112,17 +157,39 @@ export async function getPortfolioSummary(
     .from(investmentHoldings)
     .where(inArray(investmentHoldings.accountId, ids));
 
-  let totalValue = 0;
+  let holdingsValue = 0;
   let totalCostBasis = 0;
+  // Gain/loss must span the same set on both sides. Adding every holding to
+  // the value side while skipping null-basis ones on the cost side reports a
+  // holding's entire value as gain -- which is what inflated the total for
+  // zero-basis positions like ETH and BTC.
+  let gainLossCoverage = 0;
   for (const h of holdings) {
-    totalValue += h.currentValue ?? 0;
-    if (h.costBasis !== null) totalCostBasis += h.costBasis;
+    holdingsValue += h.currentValue ?? 0;
+    if (h.costBasis !== null) {
+      totalCostBasis += h.costBasis;
+      gainLossCoverage += h.currentValue ?? 0;
+    }
   }
 
+  // What the accounts are worth comes from their balances. Summing holdings
+  // instead silently drops anything the connector did not itemize.
+  const balanceRows = await db
+    .select({ id: accounts.id, currentBalance: accounts.currentBalance })
+    .from(accounts)
+    .where(inArray(accounts.id, ids));
+  const anyBalanceReported = balanceRows.some((r) => r.currentBalance !== null);
+  const balanceTotal = balanceRows.reduce((sum, r) => sum + (r.currentBalance ?? 0), 0);
+
+  // With no balance recorded anywhere, the holdings sum is the best figure we
+  // have -- falling back keeps accounts that predate balance capture working.
+  const totalValue = anyBalanceReported ? balanceTotal : holdingsValue;
+  // Clamped: a stale balance below the holdings sum would otherwise show
+  // negative cash, which is never a real state.
+  const cashValue = Math.max(0, totalValue - holdingsValue);
+
   const todayStr = today ?? todayDateString();
-  const prevDate = new Date(todayStr + "T00:00:00");
-  prevDate.setDate(prevDate.getDate() - 1);
-  const yesterdayStr = prevDate.toISOString().slice(0, 10);
+  const yesterdayStr = previousDateString(todayStr);
 
   const [hasToday] = await db
     .select({ id: holdingsHistory.id })
@@ -153,10 +220,64 @@ export async function getPortfolioSummary(
 
   return {
     totalValue,
+    holdingsValue,
+    cashValue,
     dayChange,
-    totalGainLoss: totalValue - totalCostBasis,
+    totalGainLoss: gainLossCoverage - totalCostBasis,
     totalCostBasis,
+    gainLossCoverage,
   };
+}
+
+/**
+ * Per-account balance-versus-holdings reconciliation.
+ *
+ * Investments derives its headline from holdings alone, so an account that
+ * reports a balance but itemizes only part of it loses the difference with
+ * nothing on screen to explain the shortfall (#88). This exposes the gap per
+ * account so it can be shown as cash/unallocated, and flags accounts that
+ * itemized nothing at all -- a connector gap, not a cash position.
+ */
+export async function getAccountReconciliation(
+  householdId: string,
+  db: LedgrDb = defaultDb,
+  accIds?: string[],
+): Promise<AccountReconciliationRow[]> {
+  const ids = await resolveAccIds(householdId, db, accIds);
+  if (ids.length === 0) return [];
+
+  const accountRows = await db
+    .select({ id: accounts.id, name: accounts.name, currentBalance: accounts.currentBalance })
+    .from(accounts)
+    .where(inArray(accounts.id, ids));
+
+  const holdingRows = await db
+    .select({
+      accountId: investmentHoldings.accountId,
+      value: sumCol(investmentHoldings.currentValue),
+      count: countRows(),
+    })
+    .from(investmentHoldings)
+    .where(inArray(investmentHoldings.accountId, ids))
+    .groupBy(investmentHoldings.accountId);
+
+  const byAccount = new Map(holdingRows.map((r) => [r.accountId, r]));
+
+  return accountRows
+    .map((a) => {
+      const h = byAccount.get(a.id);
+      const holdingsValue = h?.value ?? 0;
+      const balance = a.currentBalance ?? holdingsValue;
+      return {
+        accountId: a.id,
+        accountName: a.name,
+        balance,
+        holdingsValue,
+        cashValue: Math.max(0, balance - holdingsValue),
+        hasHoldings: (h?.count ?? 0) > 0,
+      };
+    })
+    .sort((x, y) => y.balance - x.balance);
 }
 
 export async function getPortfolioHistory(
@@ -346,7 +467,27 @@ export async function getInvestmentTransactions(
 export async function getInvestmentsSummary(
   householdId: string,
   db: LedgrDb = defaultDb,
-): Promise<{ totalValue: number; dayChange: number | null }> {
-  const summary = await getPortfolioSummary(householdId, db);
-  return { totalValue: summary.totalValue, dayChange: summary.dayChange };
+): Promise<InvestmentsSummary> {
+  const [summary, holdings] = await Promise.all([
+    getPortfolioSummary(householdId, db),
+    getHoldings(householdId, "consolidated", undefined, db),
+  ]);
+
+  // getHoldings returns consolidated positions already ordered by value, so the
+  // dashboard widget just takes the head of the list. Anything past the top few
+  // does not fit the cell and belongs on /investments.
+  const topHoldings = holdings.slice(0, 3).map((h) => ({
+    ticker: h.ticker,
+    securityName: h.securityName,
+    currentValue: h.currentValue,
+    gainLossPercent: h.gainLossPercent,
+    share: summary.totalValue > 0 ? (h.currentValue / summary.totalValue) * 100 : 0,
+  }));
+
+  return {
+    totalValue: summary.totalValue,
+    dayChange: summary.dayChange,
+    holdingCount: holdings.length,
+    topHoldings,
+  };
 }

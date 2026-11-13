@@ -4,6 +4,8 @@ import { useCallback } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  Tags,
+  Shapes,
   LayoutDashboard,
   Building2,
   ArrowLeftRight,
@@ -16,6 +18,7 @@ import {
   Settings,
 } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
+import { CommandPaletteTrigger } from "@/components/molecules/command-palette-trigger";
 import {
   Sidebar,
   SidebarContent,
@@ -50,6 +53,8 @@ const NAV_GROUPS: { label: string | null; items: NavItem[] }[] = [
     items: [
       { href: "/accounts", label: "Accounts", icon: Building2 },
       { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
+      { href: "/rules", label: "Rules", icon: Tags },
+      { href: "/categories", label: "Categories", icon: Shapes },
       { href: "/investments", label: "Investments", icon: TrendingUp },
     ],
   },
@@ -83,13 +88,14 @@ export function SidebarNav({ userName, userEmail }: SidebarNavProps) {
 
   return (
     <Sidebar variant="inset" collapsible="offcanvas">
-      <SidebarHeader className="px-4 py-4">
+      <SidebarHeader className="px-4 py-4 gap-3">
         <Link href="/" className="flex items-center gap-2 text-lg font-bold tracking-tight">
           <span className="flex size-5 items-center justify-center rounded-md bg-positive text-[11px] font-extrabold text-background">
             L
           </span>
           Ledgr
         </Link>
+        <CommandPaletteTrigger />
       </SidebarHeader>
 
       <SidebarContent>

@@ -9,6 +9,7 @@ import { scopedQuery } from "@/lib/scoped-query";
 import { notDeleted } from "@/lib/query-helpers";
 import { authorizeAction } from "@/lib/auth/authorize-action";
 import { getHouseholdId } from "@/lib/auth/session";
+import { withHousehold } from "@/lib/household-context";
 import { getTransactions, type TransactionFilters, type TransactionPage } from "@/queries/transactions";
 
 const categoryIdSchema = z.string().min(1).nullable();
@@ -35,55 +36,81 @@ function buildCategoryUpdate(categoryId: string | null) {
   };
 }
 
+export type UpdateTransactionCategoryResult =
+  | { success: true; merchantCategoryConflict?: { merchantId: string; currentCategoryId: string } }
+  | { error: string };
+
 export async function updateTransactionCategoryScoped(
   householdId: string,
   transactionId: string,
   categoryId: string | null,
   db: LedgrDb = defaultDb,
-): Promise<{ success: true } | { error: string }> {
+): Promise<UpdateTransactionCategoryResult> {
   const parsedTxnId = transactionIdSchema.safeParse(transactionId);
   const parsedCatId = categoryIdSchema.safeParse(categoryId);
   if (!parsedTxnId.success || !parsedCatId.success) {
     return { error: "Invalid input" };
   }
 
-  const scoped = scopedQuery(householdId, db);
-  const [existing] = await db
-    .select({ id: transactions.id, merchantId: transactions.merchantId })
-    .from(transactions)
-    .where(scoped.where(transactions, eq(transactions.id, transactionId), notDeleted(transactions)))
-    .limit(1);
-
-  if (!existing) {
-    return { error: "Transaction not found" };
-  }
-
   const updates = buildCategoryUpdate(parsedCatId.data);
+  let merchantCategoryConflict: { merchantId: string; currentCategoryId: string } | undefined;
+  let notFound = false;
 
-  await db.transaction(async (tx) => {
+  await withHousehold(householdId, async (tx) => {
+    const scoped = scopedQuery(householdId, tx);
+    const [existing] = await tx
+      .select({ id: transactions.id, merchantId: transactions.merchantId })
+      .from(transactions)
+      .where(scoped.where(transactions, eq(transactions.id, transactionId), notDeleted(transactions)))
+      .limit(1);
+
+    if (!existing) {
+      notFound = true;
+      return;
+    }
+
     await tx.update(transactions)
       .set(updates)
       .where(eq(transactions.id, existing.id));
 
-    // Propagate the correction to the merchant's default category (tier 2 of the
-    // categorization pipeline) so future synced transactions from this merchant
-    // categorize correctly instead of needing the same manual fix every time.
-    if (parsedCatId.data !== null && existing.merchantId) {
+    if (parsedCatId.data === null || !existing.merchantId) {
+      return;
+    }
+
+    const [merchant] = await tx
+      .select({ categoryId: merchants.categoryId })
+      .from(merchants)
+      .where(scoped.where(merchants, eq(merchants.id, existing.merchantId)))
+      .limit(1);
+
+    if (!merchant || merchant.categoryId === null) {
+      // No existing default to conflict with — safe to set it automatically. This is
+      // the common case: the first time we've seen this merchant get manually categorized.
       await tx.update(merchants)
         .set({ categoryId: parsedCatId.data, updatedAt: new Date() })
         .where(scoped.where(merchants, eq(merchants.id, existing.merchantId)));
+    } else if (merchant.categoryId !== parsedCatId.data) {
+      // Merchant already defaults to a different category. Since a merchant can
+      // legitimately span multiple categories (e.g. Amazon), don't silently overwrite
+      // that default for every other transaction from this merchant — surface the
+      // conflict so the caller can ask the user whether to apply it more broadly.
+      merchantCategoryConflict = { merchantId: existing.merchantId, currentCategoryId: merchant.categoryId };
     }
-  });
+  }, db);
+
+  if (notFound) {
+    return { error: "Transaction not found" };
+  }
 
   revalidatePath("/transactions");
-  return { success: true };
+  return merchantCategoryConflict ? { success: true, merchantCategoryConflict } : { success: true };
 }
 
 export async function updateTransactionCategory(
   transactionId: string,
   categoryId: string | null,
   db: LedgrDb = defaultDb,
-): Promise<{ success: true } | { error: string }> {
+): Promise<UpdateTransactionCategoryResult> {
   const auth = await authorizeAction();
   if ("error" in auth) return auth;
   return updateTransactionCategoryScoped(auth.householdId, transactionId, categoryId, db);
@@ -102,21 +129,31 @@ export async function toggleReviewed(
     return { error: "Invalid input" };
   }
 
-  const scoped = scopedQuery(householdId, db);
-  const [existing] = await db
-    .select({ id: transactions.id, reviewed: transactions.reviewed })
-    .from(transactions)
-    .where(scoped.where(transactions, eq(transactions.id, parsedId.data), notDeleted(transactions)))
-    .limit(1);
+  let newReviewed = false;
+  let notFound = false;
 
-  if (!existing) {
+  await withHousehold(householdId, async (tx) => {
+    const scoped = scopedQuery(householdId, tx);
+    const [existing] = await tx
+      .select({ id: transactions.id, reviewed: transactions.reviewed })
+      .from(transactions)
+      .where(scoped.where(transactions, eq(transactions.id, parsedId.data), notDeleted(transactions)))
+      .limit(1);
+
+    if (!existing) {
+      notFound = true;
+      return;
+    }
+
+    newReviewed = !existing.reviewed;
+    await tx.update(transactions)
+      .set({ reviewed: newReviewed, updatedAt: new Date() })
+      .where(eq(transactions.id, existing.id));
+  }, db);
+
+  if (notFound) {
     return { error: "Transaction not found" };
   }
-
-  const newReviewed = !existing.reviewed;
-  await db.update(transactions)
-    .set({ reviewed: newReviewed, updatedAt: new Date() })
-    .where(eq(transactions.id, existing.id));
 
   revalidatePath("/transactions");
   return { success: true, reviewed: newReviewed };
@@ -135,32 +172,32 @@ export async function bulkUpdateCategory(
   const auth = await authorizeAction();
   if ("error" in auth) return auth;
   const { householdId } = auth;
-  const scoped = scopedQuery(householdId, db);
-
-  const owned = await db
-    .select({ id: transactions.id })
-    .from(transactions)
-    .where(
-      scoped.where(
-        transactions,
-        inArray(transactions.id, parsedIds.data),
-        notDeleted(transactions),
-      ),
-    );
-
-  if (owned.length === 0) {
-    return { success: true, updatedCount: 0 };
-  }
-
-  const ownedIds = owned.map((r) => r.id);
   const updates = buildCategoryUpdate(categoryId);
 
-  await db.update(transactions)
-    .set(updates)
-    .where(inArray(transactions.id, ownedIds));
+  const updatedCount = await withHousehold(householdId, async (tx) => {
+    const scoped = scopedQuery(householdId, tx);
+    const owned = await tx
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(
+        scoped.where(
+          transactions,
+          inArray(transactions.id, parsedIds.data),
+          notDeleted(transactions),
+        ),
+      );
+
+    if (owned.length === 0) return 0;
+
+    const ownedIds = owned.map((r) => r.id);
+    await tx.update(transactions)
+      .set(updates)
+      .where(inArray(transactions.id, ownedIds));
+    return ownedIds.length;
+  }, db);
 
   revalidatePath("/transactions");
-  return { success: true, updatedCount: ownedIds.length };
+  return { success: true, updatedCount };
 }
 
 export async function bulkMarkReviewed(
@@ -176,30 +213,31 @@ export async function bulkMarkReviewed(
   const auth = await authorizeAction();
   if ("error" in auth) return auth;
   const { householdId } = auth;
-  const scoped = scopedQuery(householdId, db);
 
-  const owned = await db
-    .select({ id: transactions.id })
-    .from(transactions)
-    .where(
-      scoped.where(
-        transactions,
-        inArray(transactions.id, parsedIds.data),
-        notDeleted(transactions),
-      ),
-    );
+  const updatedCount = await withHousehold(householdId, async (tx) => {
+    const scoped = scopedQuery(householdId, tx);
+    const owned = await tx
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(
+        scoped.where(
+          transactions,
+          inArray(transactions.id, parsedIds.data),
+          notDeleted(transactions),
+        ),
+      );
 
-  if (owned.length === 0) {
-    return { success: true, updatedCount: 0 };
-  }
+    if (owned.length === 0) return 0;
 
-  const ownedIds = owned.map((r) => r.id);
-  await db.update(transactions)
-    .set({ reviewed, updatedAt: new Date() })
-    .where(inArray(transactions.id, ownedIds));
+    const ownedIds = owned.map((r) => r.id);
+    await tx.update(transactions)
+      .set({ reviewed, updatedAt: new Date() })
+      .where(inArray(transactions.id, ownedIds));
+    return ownedIds.length;
+  }, db);
 
   revalidatePath("/transactions");
-  return { success: true, updatedCount: ownedIds.length };
+  return { success: true, updatedCount };
 }
 
 export async function loadMoreTransactions(
@@ -216,5 +254,9 @@ export async function loadMoreTransactions(
     throw new Error("Invalid cursor");
   }
   const householdId = await getHouseholdId();
-  return getTransactions(householdId, parsedFilters.data, 50, parsedCursor.data, db);
+  return withHousehold(
+    householdId,
+    (tx) => getTransactions(householdId, parsedFilters.data, 50, parsedCursor.data, tx),
+    db,
+  );
 }

@@ -49,7 +49,7 @@ describe("getDashboardSummary", () => {
     });
     await insertAccount(db, householdId, {
       type: "credit",
-      currentBalance: 50000,
+      currentBalance: -50000,
     });
 
     const thisMonth = new Date().toISOString().slice(0, 7);
@@ -76,6 +76,42 @@ describe("getDashboardSummary", () => {
     expect(result.monthlyIncome).toBe(200000);
     expect(result.monthlyNet).toBe(200000 - 3000);
   });
+
+  it("excludes transfer transactions from income and expenses", async () => {
+    const { householdId } = await insertHousehold(db);
+    const { accountId } = await insertAccount(db, householdId, {
+      type: "checking",
+      currentBalance: 100000,
+    });
+
+    const thisMonth = new Date().toISOString().slice(0, 7);
+
+    // A real expense and a real income transaction.
+    await insertTransaction(db, householdId, accountId, {
+      date: `${thisMonth}-05`,
+      normalizedAmount: -3000,
+      amount: 3000,
+    });
+    await insertTransaction(db, householdId, accountId, {
+      date: `${thisMonth}-06`,
+      normalizedAmount: 20000,
+      amount: -20000,
+    });
+
+    // A self-transfer between the household's own accounts must not count as
+    // either income or spending, even though its amount is a large positive.
+    await insertTransaction(db, householdId, accountId, {
+      date: `${thisMonth}-10`,
+      normalizedAmount: 500000,
+      amount: -500000,
+      isTransfer: true,
+    });
+
+    const result = await getDashboardSummary(householdId, undefined, db);
+
+    expect(result.monthlyExpenses).toBe(3000);
+    expect(result.monthlyIncome).toBe(20000);
+  });
 });
 
 describe("getNetWorthHistory", () => {
@@ -87,7 +123,7 @@ describe("getNetWorthHistory", () => {
     });
     const { accountId: creditId } = await insertAccount(db, householdId, {
       type: "credit",
-      currentBalance: 20000,
+      currentBalance: -20000,
     });
 
     // A historical date inside the 3M window but not today: first of last month.
@@ -100,7 +136,7 @@ describe("getNetWorthHistory", () => {
     })();
 
     await db.insert(balanceHistory).values({ id: uuid(), accountId: checkingId, date: histDate, balance: 70000 });
-    await db.insert(balanceHistory).values({ id: uuid(), accountId: creditId, date: histDate, balance: 15000 });
+    await db.insert(balanceHistory).values({ id: uuid(), accountId: creditId, date: histDate, balance: -15000 });
 
     const result = await getNetWorthHistory(householdId, "3M", db);
 
@@ -109,14 +145,14 @@ describe("getNetWorthHistory", () => {
     const historicalPoint = result.find((r) => r.date === histDate);
     expect(historicalPoint).toBeDefined();
     expect(historicalPoint!.assets).toBe(70000);
-    expect(historicalPoint!.liabilities).toBe(15000);
+    expect(historicalPoint!.liabilities).toBe(-15000);
     expect(historicalPoint!.netWorth).toBe(55000);
 
     const today = todayDateString();
     const todayPoint = result.find((r) => r.date === today);
     expect(todayPoint).toBeDefined();
     expect(todayPoint!.assets).toBe(80000);
-    expect(todayPoint!.liabilities).toBe(20000);
+    expect(todayPoint!.liabilities).toBe(-20000);
     expect(todayPoint!.netWorth).toBe(60000);
   });
 
@@ -136,16 +172,81 @@ describe("getNetWorthHistory", () => {
 
     await db.insert(balanceHistory).values({ id: uuid(), accountId: checkingId, date: histDate, balance: 40000 });
     await db.insert(balanceHistory).values({ id: uuid(), accountId: savingsId, date: histDate, balance: 60000 });
-    await db.insert(balanceHistory).values({ id: uuid(), accountId: creditId, date: histDate, balance: 25000 });
-    await db.insert(balanceHistory).values({ id: uuid(), accountId: loanId, date: histDate, balance: 5000 });
+    await db.insert(balanceHistory).values({ id: uuid(), accountId: creditId, date: histDate, balance: -25000 });
+    await db.insert(balanceHistory).values({ id: uuid(), accountId: loanId, date: histDate, balance: -5000 });
 
     const result = await getNetWorthHistory(householdId, "3M", db);
 
     const point = result.find((r) => r.date === histDate)!;
     expect(point).toBeDefined();
     expect(point.assets).toBe(100000); // checking + savings
-    expect(point.liabilities).toBe(30000); // credit + loan
+    expect(point.liabilities).toBe(-30000); // credit + loan, stored negative
     expect(point.netWorth).toBe(70000);
+  });
+
+  it("carries an account's last known balance forward to dates it has no row for", async () => {
+    // The real-world shape: balance reconstruction covers depository accounts
+    // densely but leaves investment accounts with only sparse snapshots. A
+    // missing row must mean "unchanged", not "worth zero".
+    const { householdId } = await insertHousehold(db);
+    const { accountId: checkingId } = await insertAccount(db, householdId, {
+      type: "checking",
+      currentBalance: 10000,
+    });
+    const { accountId: brokerageId } = await insertAccount(db, householdId, {
+      type: "investment",
+      currentBalance: 500000,
+    });
+
+    const day = (n: number) => {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - n);
+      return d.toISOString().slice(0, 10);
+    };
+
+    // Checking has a row on both days; the brokerage only on the earlier one.
+    await db.insert(balanceHistory).values([
+      { id: uuid(), accountId: checkingId, date: day(20), balance: 9000 },
+      { id: uuid(), accountId: checkingId, date: day(10), balance: 10000 },
+      { id: uuid(), accountId: brokerageId, date: day(20), balance: 400000 },
+    ]);
+
+    const result = await getNetWorthHistory(householdId, "3M", db);
+
+    const later = result.find((p) => p.date === day(10))!;
+    expect(later).toBeDefined();
+    // 10000 checking + 400000 brokerage carried forward — not 10000 alone.
+    expect(later.assets).toBe(410000);
+  });
+
+  it("seeds carry-forward from the last balance before the window starts", async () => {
+    const { householdId } = await insertHousehold(db);
+    const { accountId: brokerageId } = await insertAccount(db, householdId, {
+      type: "investment",
+      currentBalance: 500000,
+    });
+    const { accountId: checkingId } = await insertAccount(db, householdId, {
+      type: "checking",
+      currentBalance: 10000,
+    });
+
+    const day = (n: number) => {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - n);
+      return d.toISOString().slice(0, 10);
+    };
+
+    // The brokerage's only snapshot predates the 1M window entirely.
+    await db.insert(balanceHistory).values([
+      { id: uuid(), accountId: brokerageId, date: day(120), balance: 400000 },
+      { id: uuid(), accountId: checkingId, date: day(5), balance: 10000 },
+    ]);
+
+    const result = await getNetWorthHistory(householdId, "1M", db);
+
+    const point = result.find((p) => p.date === day(5))!;
+    expect(point).toBeDefined();
+    expect(point.assets).toBe(410000);
   });
 
   it("returns empty array when no account has a balance", async () => {
@@ -458,5 +559,90 @@ describe("household isolation", () => {
 
     const recent = await getRecentTransactions(otherId, 5, db);
     expect(recent.length).toBe(0);
+  });
+});
+
+describe("getNetWorthHistory coverage reporting", () => {
+  // An account whose first-ever snapshot falls inside the window contributes
+  // $0 to every earlier point — carry-forward has nothing to carry backward.
+  // The series must say so rather than passing a partial sum off as net worth.
+  it("reports how many accounts each point actually covers", async () => {
+    const { householdId } = await insertHousehold(db);
+    const { accountId: cardId } = await insertAccount(db, householdId, {
+      type: "credit",
+      currentBalance: -20000,
+    });
+    const { accountId: brokerageId } = await insertAccount(db, householdId, {
+      type: "investment",
+      currentBalance: 500000,
+    });
+
+    const early = (() => {
+      const d = new Date();
+      d.setUTCDate(1);
+      d.setUTCMonth(d.getUTCMonth() - 2);
+      return d.toISOString().slice(0, 10);
+    })();
+    const late = (() => {
+      const d = new Date();
+      d.setUTCDate(1);
+      d.setUTCMonth(d.getUTCMonth() - 1);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    // Only the card has history at `early`; the brokerage first appears at `late`.
+    await db.insert(balanceHistory).values({ id: uuid(), accountId: cardId, date: early, balance: -15000 });
+    await db.insert(balanceHistory).values({ id: uuid(), accountId: brokerageId, date: late, balance: 400000 });
+
+    const result = await getNetWorthHistory(householdId, "3M", db);
+
+    const earlyPoint = result.find((p) => p.date === early)!;
+    expect(earlyPoint.coveredAccounts).toBe(1);
+    expect(earlyPoint.totalAccounts).toBe(2);
+
+    const latePoint = result.find((p) => p.date === late)!;
+    expect(latePoint.coveredAccounts).toBe(2);
+    expect(latePoint.totalAccounts).toBe(2);
+  });
+
+  it("marks the synthetic today point by how many accounts carry a balance", async () => {
+    const { householdId } = await insertHousehold(db);
+    await insertAccount(db, householdId, { type: "checking", currentBalance: 100000 });
+    await insertAccount(db, householdId, { type: "investment", currentBalance: null });
+
+    const result = await getNetWorthHistory(householdId, "3M", db);
+    const today = result[result.length - 1];
+
+    expect(today.coveredAccounts).toBe(1);
+    expect(today.totalAccounts).toBe(2);
+  });
+
+  it("counts an account seeded from before the window as covered throughout", async () => {
+    const { householdId } = await insertHousehold(db);
+    const { accountId } = await insertAccount(db, householdId, {
+      type: "checking",
+      currentBalance: 100000,
+    });
+
+    // Snapshot predates the 1M window entirely.
+    const old = (() => {
+      const d = new Date();
+      d.setUTCMonth(d.getUTCMonth() - 6);
+      return d.toISOString().slice(0, 10);
+    })();
+    const inWindow = (() => {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - 5);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    await db.insert(balanceHistory).values({ id: uuid(), accountId, date: old, balance: 90000 });
+    await db.insert(balanceHistory).values({ id: uuid(), accountId, date: inWindow, balance: 95000 });
+
+    const result = await getNetWorthHistory(householdId, "1M", db);
+    for (const point of result) {
+      expect(point.coveredAccounts).toBe(1);
+      expect(point.totalAccounts).toBe(1);
+    }
   });
 });

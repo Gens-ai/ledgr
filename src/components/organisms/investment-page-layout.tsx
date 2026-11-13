@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TrendingUp } from "lucide-react";
 import { PortfolioSummaryHeader } from "@/components/organisms/portfolio-summary-header";
+import { PortfolioReconciliation } from "@/components/organisms/portfolio-reconciliation";
 import { HoldingsTable } from "@/components/organisms/holdings-table";
 import { InvestmentTransactionList } from "@/components/organisms/investment-transaction-list";
 import type { SpendingChartItem } from "@/components/atoms/spending-chart";
@@ -26,6 +27,7 @@ import type {
   PortfolioSummary,
   PortfolioPoint,
   AllocationSlice,
+  AccountReconciliationRow,
   InvestmentHoldingRow,
   InvTxnRow,
   InvestmentFilters as IFilters,
@@ -35,6 +37,7 @@ interface InvestmentPageLayoutProps {
   summary: PortfolioSummary;
   history: PortfolioPoint[];
   allocation: AllocationSlice[];
+  reconciliation: AccountReconciliationRow[];
   holdings: InvestmentHoldingRow[] | null;
   transactions: { rows: InvTxnRow[]; nextCursor: string | null } | null;
   activeTab: string;
@@ -50,7 +53,7 @@ function formatAllocationTypeLabel(type: string): string {
   return type.charAt(0).toUpperCase() + type.slice(1).replace("_", " ");
 }
 
-export function InvestmentPageLayout({ summary, history, allocation, holdings, transactions, activeTab, view, filters, accounts }: InvestmentPageLayoutProps) {
+export function InvestmentPageLayout({ summary, history, allocation, reconciliation, holdings, transactions, activeTab, view, filters, accounts }: InvestmentPageLayoutProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -59,7 +62,7 @@ export function InvestmentPageLayout({ summary, history, allocation, holdings, t
       <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-4">
         <TrendingUp className="size-12 text-muted-foreground" />
         <h2 className="text-xl font-semibold">No Investment Accounts</h2>
-        <p className="text-muted-foreground max-w-md">Connect a brokerage or retirement account via Plaid to see your portfolio here.</p>
+        <p className="text-muted-foreground max-w-md">Connect a brokerage or retirement account via Plaid or SimpleFIN to see your portfolio here.</p>
       </div>
     );
   }
@@ -93,6 +96,7 @@ export function InvestmentPageLayout({ summary, history, allocation, holdings, t
           </div>
         </div>
       </div>
+      <PortfolioReconciliation rows={reconciliation} />
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
           <TabsTrigger value="holdings">Holdings</TabsTrigger>

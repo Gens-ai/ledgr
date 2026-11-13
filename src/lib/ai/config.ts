@@ -1,7 +1,7 @@
 import type { LanguageModel, Tool } from "ai";
 import { createUserModel, createUserSearchTool, type AiProvider, type ProviderConfig } from "./provider";
 
-const VALID_PROVIDERS: AiProvider[] = ["openai", "anthropic", "google", "custom"];
+const VALID_PROVIDERS: AiProvider[] = ["openai", "anthropic", "google", "openrouter", "custom"];
 
 export function getAiConfig(): ProviderConfig | null {
   const provider = process.env.AI_PROVIDER;
@@ -74,5 +74,5 @@ export function createAiSearchTool(): Tool | null {
  * actually constructing the tool. */
 export function hasWebSearchProvider(): boolean {
   const config = getAiConfig();
-  return config !== null && config.aiProvider !== "custom";
+  return config !== null && config.aiProvider !== "custom" && config.aiProvider !== "openrouter";
 }

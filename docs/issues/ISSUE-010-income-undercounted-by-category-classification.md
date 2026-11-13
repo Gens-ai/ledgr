@@ -59,3 +59,11 @@ classification methods in the same app.
 income the same way, since a per-category breakdown structurally needs
 category data — the real fix there is the categorization pipeline itself
 (see `ISSUE-002`), not a query-level swap.
+
+## 2026-11-12: extended to Reports
+
+After the 2026-11 upstream merge the sign rule now also covers the Reports
+Total Income/Expenses tiles (and MCP `get_income_vs_expense`), via the shared
+`incomeTotalsRule()` in `src/queries/shared-conditions.ts`, so the dashboard,
+Cash Flow, Reports and Safe to Spend agree. Refunds count as income (accepted).
+The category table and Sankey remain category-based.

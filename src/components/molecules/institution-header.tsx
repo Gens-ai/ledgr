@@ -21,18 +21,19 @@ import {
   AlertDialogMedia,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { formatRelativeTime } from "@/lib/relative-time";
 import { EntityAvatar } from "@/components/molecules/entity-avatar";
 import { StatusBadge } from "@/components/atoms/status-badge";
 import { SyncStatusBadge, type SyncStatus } from "@/components/atoms/sync-status-badge";
-import type { PlaidItemStatus } from "@/db/schema/plaid";
+import type { ConnectionStatus } from "@/db/schema/bank-connections";
 
 interface InstitutionHeaderProps {
   institutionName: string;
   logoBase64?: string | null;
   primaryColor?: string | null;
-  status: PlaidItemStatus | null;
+  status: ConnectionStatus | null;
   accountCount: number;
-  plaidItemId: string | null;
+  connectionId: string | null;
   lastSyncedAt: Date | string | null;
   syncStatus: SyncStatus;
   syncError?: string;
@@ -42,24 +43,13 @@ interface InstitutionHeaderProps {
   reAuthError?: string | null;
 }
 
-function formatRelativeTime(date: Date | string): string {
-  const diff = Date.now() - new Date(date).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
 export function InstitutionHeader({
   institutionName,
   logoBase64,
   primaryColor,
   status,
   accountCount,
-  plaidItemId,
+  connectionId,
   lastSyncedAt,
   syncStatus,
   syncError,
@@ -86,7 +76,7 @@ export function InstitutionHeader({
               <p className="text-xs text-muted-foreground">
                 {accountCount} {accountCount === 1 ? "account" : "accounts"}
               </p>
-              {plaidItemId && lastSyncedAt && syncStatus === "idle" && (
+              {connectionId && lastSyncedAt && syncStatus === "idle" && (
                 <>
                   <span className="text-xs text-muted-foreground">·</span>
                   <p className="text-xs text-muted-foreground">
@@ -100,7 +90,7 @@ export function InstitutionHeader({
         <div className="flex items-center gap-2">
           <SyncStatusBadge status={syncStatus} errorMessage={syncError} />
           {status && syncStatus === "idle" && <StatusBadge status={status} />}
-          {reconnectButton ?? (plaidItemId ? (
+          {reconnectButton ?? (connectionId ? (
             <DropdownMenu>
               <DropdownMenuTrigger
                 className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"

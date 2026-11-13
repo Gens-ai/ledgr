@@ -1,10 +1,11 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { NetWorthPoint } from "@/queries/dashboard";
 import { getDashboardSummary, getNetWorthHistory } from "@/queries/dashboard";
 import { centsToDisplay } from "@/lib/money";
+import { withHousehold } from "@/lib/household-context";
 import { READ_ANNOTATIONS } from "../constants";
-import { jsonResult } from "../tool-result";
+import { JSON_RESULT_SCHEMA, jsonResult } from "../tool-result";
 
 export interface NetWorthHistoryEntry {
   date: string;
@@ -25,8 +26,11 @@ export function formatNetWorthHistory(points: NetWorthPoint[]): NetWorthHistoryE
     date: p.date,
     assetsCents: p.assets,
     assetsDisplay: centsToDisplay(p.assets),
-    liabilitiesCents: p.liabilities,
-    liabilitiesDisplay: centsToDisplay(p.liabilities),
+    // Reported as a positive magnitude. Internally liabilities are stored
+    // negative (see db/schema/accounts.ts), but a field named "liabilities"
+    // handing an agent -$150 reads as a credit, not a debt.
+    liabilitiesCents: Math.abs(p.liabilities),
+    liabilitiesDisplay: centsToDisplay(Math.abs(p.liabilities)),
     netWorthCents: p.netWorth,
     netWorthDisplay: centsToDisplay(p.netWorth),
   }));
@@ -39,11 +43,12 @@ export function registerDashboardTools(server: McpServer, householdId: string) {
       title: "Get Dashboard Summary",
       description:
         "Get the household dashboard summary: net worth, monthly income, monthly expenses, and monthly net.",
-      inputSchema: {},
+      inputSchema: z.object({}),
+      outputSchema: JSON_RESULT_SCHEMA,
       annotations: READ_ANNOTATIONS,
     },
     async () => {
-      const s = await getDashboardSummary(householdId);
+      const s = await withHousehold(householdId, (tx) => getDashboardSummary(householdId, undefined, tx));
       return jsonResult({
         netWorthCents: s.netWorth,
         netWorthDisplay: centsToDisplay(s.netWorth),
@@ -63,12 +68,13 @@ export function registerDashboardTools(server: McpServer, householdId: string) {
       title: "Get Net Worth History",
       description:
         "Get the household net-worth trend over time as a dated series of assets, liabilities, and net worth. The final point reflects today's live balances.",
-      inputSchema: {
+      inputSchema: z.object({
         range: z
           .enum(["1M", "3M", "6M", "1Y", "all"])
           .optional()
           .describe("Time window for the series. Defaults to '6M'."),
-      },
+      }),
+      outputSchema: JSON_RESULT_SCHEMA,
       annotations: READ_ANNOTATIONS,
     },
     async ({ range }) => {

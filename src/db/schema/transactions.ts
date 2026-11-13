@@ -1,11 +1,24 @@
-import { index, integer, pgTable, text, boolean, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { index, integer, pgTable, pgPolicy, text, boolean, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { accounts } from "./accounts";
 import { households } from "./households";
 import { merchants } from "./merchants";
 import { categories } from "./categories";
 import { recurringTransactions } from "./recurring";
 
-export const CATEGORY_SOURCES = ["rule", "merchant_default", "pfc", "ai", "manual"] as const;
+// `ai_low_confidence` is a real AI assignment, just one the model was unsure
+// of. An uncategorized row has to be edited by hand anyway, so a best guess is
+// strictly better than nothing — it is recorded under its own source so the
+// review queue can surface it and a later tier can safely overwrite it, which
+// a plain `ai` assignment is not meant to allow.
+export const CATEGORY_SOURCES = [
+  "rule",
+  "merchant_default",
+  "pfc",
+  "ai",
+  "ai_low_confidence",
+  "manual",
+] as const;
 export type CategorySource = (typeof CATEGORY_SOURCES)[number];
 
 export const transactions = pgTable(
@@ -18,7 +31,6 @@ export const transactions = pgTable(
     householdId: text("household_id")
       .notNull()
       .references(() => households.id, { onDelete: "cascade" }),
-    plaidTransactionId: text("plaid_transaction_id"),
     pendingTransactionId: text("pending_transaction_id"),
     merchantId: text("merchant_id").references(() => merchants.id, {
       onDelete: "set null",
@@ -42,11 +54,35 @@ export const transactions = pgTable(
     notes: text("notes"),
     tags: text("tags"),
     isTransfer: boolean("is_transfer").default(false),
+    // Removes the row from the ledger, reports and totals entirely, unlike
+    // isTransfer which keeps it visible but out of spend. For duplicate
+    // holds, test charges, and other rows a household never wants to see
+    // again. Purely a user decision — nothing sync-side sets this.
+    isHidden: boolean("is_hidden").default(false),
+    // Provenance for isTransfer/transferPairId, mirroring categorySource:
+    // manual and manual_rejected are user decisions and must never be
+    // overwritten by the lower tiers (pfc at ingestion, auto/pattern
+    // detection). `pattern` is a single-leg, high-confidence name/memo match
+    // (e.g. a credit-card payoff memo) — trusted immediately like `auto`, but
+    // tagged separately since it never has a transferPairId. `suggested` is a
+    // single-leg, low-confidence match (e.g. a bare P2P processor name) —
+    // isTransfer stays false until a human confirms via the review queue, so
+    // it keeps counting toward spend/income until then. `investment_account`
+    // is a deterministic, non-ambiguous tag applied to every transaction on
+    // an account.type="investment" account (brokerage fills, clearing fees)
+    // — those are never spending/income, but unlike `pattern`/`auto` they
+    // aren't a "transfer" in the UI sense, so the pill label branches on this
+    // source to show "Investment" instead of "Transfer".
+    transferSource: text("transfer_source", {
+      enum: ["pfc", "auto", "pattern", "suggested", "manual", "manual_rejected", "investment_account"],
+    }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
     externalId: text("external_id"),
+    provider: text("provider", { enum: ["plaid", "simplefin", "csv", "manual"] }),
     aiCategorizationAttemptedAt: timestamp("ai_categorization_attempted_at", { withTimezone: true }),
+    merchantResolutionAttemptedAt: timestamp("merchant_resolution_attempted_at", { withTimezone: true }),
     pfcPrimary: text("pfc_primary"),
     pfcDetailed: text("pfc_detailed"),
     categorySource: text("category_source"),
@@ -56,15 +92,30 @@ export const transactions = pgTable(
     index("idx_txn_category_date").on(table.categoryId, table.date),
     index("idx_txn_household_date").on(table.householdId, table.date),
     index("idx_txn_date").on(table.date),
-    uniqueIndex("idx_txn_plaid_id_unique").on(table.plaidTransactionId),
     index("idx_txn_merchant").on(table.merchantId),
+    index("idx_txn_household_merchant_resolution").on(table.householdId, table.merchantId, table.merchantResolutionAttemptedAt),
     index("idx_txn_transfer").on(table.transferPairId),
-    index("idx_txn_external_id").on(table.accountId, table.externalId),
+    uniqueIndex("idx_txn_external_id")
+      .on(table.accountId, table.externalId)
+      .where(sql`external_id IS NOT NULL`),
     index("idx_txn_household_reviewed_date").on(table.householdId, table.reviewed, table.date),
     index("idx_txn_household_transfer_date").on(table.householdId, table.isTransfer, table.date),
+    index("idx_txn_household_hidden_date").on(table.householdId, table.isHidden, table.date),
     index("idx_txn_household_date_id").on(table.householdId, table.date, table.id),
+    // RLS PILOT — every call site touching `transactions` now runs inside
+    // withHousehold() (src/lib/household-context.ts), which sets
+    // app.household_id per this policy's requirement. Still not load-bearing
+    // in a default deployment, though: this policy only has effect for a
+    // non-superuser, non-BYPASSRLS connection, and the app currently connects
+    // as the POSTGRES_USER role, which the official postgres image grants
+    // superuser. See docs/rls-pilot.md for the remaining role-separation step.
+    pgPolicy("household_isolation", {
+      for: "all",
+      using: sql`household_id = current_setting('app.household_id', true)`,
+      withCheck: sql`household_id = current_setting('app.household_id', true)`,
+    }),
   ]
-);
+).enableRLS();
 
 export const transactionSplits = pgTable(
   "transaction_splits",

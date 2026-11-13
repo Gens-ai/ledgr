@@ -1,0 +1,432 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState, useTransition, type FormEvent } from "react";
+import { Plus, Trash2 } from "lucide-react";
+import {
+  createCategory,
+  createCategoryGroup,
+  deleteCategoryGroup,
+  renameCategory,
+  renameCategoryGroup,
+  updateCategory,
+  updateCategoryGroupIcon,
+  updateCategoryReporting,
+} from "@/actions/categories";
+import { CategoryIconPicker } from "@/components/molecules/category-icon-picker";
+import { EditableText } from "@/components/molecules/editable-text";
+import { CategoryDeleteDialog, type ReplacementOption } from "@/components/organisms/category-delete-dialog";
+import { CategoryEditDialog } from "@/components/organisms/category-edit-dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { CategoryGroup } from "@/queries/categories";
+
+type ActionResult = { success: true } | { error: string };
+
+const TRANSFER_SPENDING_HELP =
+  "Use \"Count transfers as spending\" for transfers that are really spending, such as rent or " +
+  "paying a person by Zelle or Venmo. Leave it off for credit card payments: the card's own " +
+  "purchases are already counted, so including the payment would count them twice. Brokerage " +
+  "activity is never counted.";
+
+interface CategoryManagerProps {
+  groups: CategoryGroup[];
+}
+
+interface DeleteButtonProps {
+  label: string;
+  description: string;
+  disabled: boolean;
+  onDelete: () => Promise<ActionResult>;
+  onError: (message: string) => void;
+  onDeleted: () => void;
+}
+
+function DeleteButton({
+  label,
+  description,
+  disabled,
+  onDelete,
+  onError,
+  onDeleted,
+}: DeleteButtonProps) {
+  const [open, setOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+
+  function confirmDelete() {
+    startTransition(async () => {
+      const result = await onDelete();
+      if ("error" in result) {
+        onError(result.error);
+        return;
+      }
+      setOpen(false);
+      onDeleted();
+    });
+  }
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-7 hover:text-destructive"
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => setOpen(true)}
+      >
+        <Trash2 className="size-3.5" />
+      </Button>
+      <AlertDialog open={open} onOpenChange={setOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{label}?</AlertDialogTitle>
+            <AlertDialogDescription>{description}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" disabled={pending} onClick={confirmDelete}>
+              {pending ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
+export function CategoryManager({ groups }: CategoryManagerProps) {
+  const router = useRouter();
+  const [groupName, setGroupName] = useState("");
+  const [categoryName, setCategoryName] = useState("");
+  const [groupId, setGroupId] = useState(groups[0]?.id ?? "");
+  const [isIncome, setIsIncome] = useState(false);
+  const [includeTransferInSpending, setIncludeTransferInSpending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+
+  const selectedGroupId = groups.some((group) => group.id === groupId)
+    ? groupId
+    : (groups[0]?.id ?? "");
+  const selectedGroupName = groups.find((group) => group.id === selectedGroupId)?.name;
+  const replacementOptions: ReplacementOption[] = groups.flatMap((group) =>
+    group.categories.map((category) => ({
+      id: category.id,
+      name: category.name,
+      groupName: group.name,
+    })),
+  );
+
+  function refresh() {
+    setError(null);
+    router.refresh();
+  }
+
+  function handleCreateGroup(event: FormEvent) {
+    event.preventDefault();
+    startTransition(async () => {
+      const result = await createCategoryGroup(groupName);
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      setGroupName("");
+      setGroupId(result.id);
+      refresh();
+    });
+  }
+
+  function handleCreateCategory(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedGroupId) {
+      setError("Create a category group first.");
+      return;
+    }
+
+    startTransition(async () => {
+      const result = await createCategory({
+        groupId: selectedGroupId,
+        name: categoryName,
+        isIncome,
+        includeTransferInSpending,
+      });
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      setCategoryName("");
+      setIsIncome(false);
+      setIncludeTransferInSpending(false);
+      refresh();
+    });
+  }
+
+  async function handleRenameGroup(id: string, name: string): Promise<ActionResult> {
+    const result = await renameCategoryGroup(id, name);
+    if ("error" in result) setError(result.error);
+    else refresh();
+    return result;
+  }
+
+  async function handleRenameCategory(id: string, name: string): Promise<ActionResult> {
+    const result = await renameCategory(id, name);
+    if ("error" in result) setError(result.error);
+    else refresh();
+    return result;
+  }
+
+  function handleCategoryIcon(id: string, icon: string) {
+    startTransition(async () => {
+      const result = await updateCategory(id, { icon });
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      refresh();
+    });
+  }
+
+  function handleGroupIcon(id: string, icon: string) {
+    startTransition(async () => {
+      const result = await updateCategoryGroupIcon(id, icon);
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      refresh();
+    });
+  }
+
+  function handleReportingChange(id: string, spending: boolean) {
+    startTransition(async () => {
+      const result = await updateCategoryReporting(id, spending);
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      refresh();
+    });
+  }
+
+  return (
+    <div className="space-y-6">
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card size="sm">
+          <CardHeader>
+            <CardTitle>Create category group</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form className="flex gap-2" onSubmit={handleCreateGroup}>
+              <Input
+                value={groupName}
+                onChange={(event) => setGroupName(event.target.value)}
+                placeholder="Group name"
+                maxLength={80}
+                required
+                aria-label="Group name"
+              />
+              <Button type="submit" size="sm" disabled={pending}>
+                <Plus className="size-4" />
+                Add group
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        <Card size="sm">
+          <CardHeader>
+            <CardTitle>Create category</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form className="space-y-3" onSubmit={handleCreateCategory}>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Input
+                  value={categoryName}
+                  onChange={(event) => setCategoryName(event.target.value)}
+                  placeholder="Category name"
+                  maxLength={80}
+                  required
+                  aria-label="Category name"
+                />
+                <Select
+                  value={selectedGroupId}
+                  onValueChange={(value) => {
+                    if (value !== null) setGroupId(value);
+                  }}
+                  disabled={groups.length === 0}
+                >
+                  <SelectTrigger className="w-full" aria-label="Category group">
+                    <SelectValue placeholder="Choose group">{selectedGroupName}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {groups.map((group) => (
+                      <SelectItem key={group.id} value={group.id}>
+                        {group.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap gap-4">
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={isIncome}
+                      onCheckedChange={setIsIncome}
+                      aria-label="Income category"
+                    />
+                    Income category
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={includeTransferInSpending}
+                      onCheckedChange={setIncludeTransferInSpending}
+                      disabled={isIncome}
+                      aria-label="Count transfers as spending"
+                    />
+                    Count transfers as spending
+                  </label>
+                </div>
+                <Button type="submit" size="sm" disabled={pending || groups.length === 0}>
+                  <Plus className="size-4" />
+                  Add category
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">{TRANSFER_SPENDING_HELP}</p>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="space-y-4">
+        {groups.map((group) => (
+          <Card key={group.id} size="sm">
+            <CardHeader className="border-b">
+              <div className="flex min-w-0 items-center gap-2">
+                <CategoryIconPicker
+                  value={group.icon}
+                  onChange={(icon) => handleGroupIcon(group.id, icon)}
+                  label={`Change icon for group ${group.name}`}
+                  disabled={pending}
+                />
+                <div className="min-w-0 flex-1">
+                  <EditableText
+                    value={group.name}
+                    onSave={(name) => handleRenameGroup(group.id, name)}
+                    editLabel={`Rename group ${group.name}`}
+                    className="font-heading text-sm font-medium"
+                  />
+                </div>
+                <Badge variant={group.isSystem ? "secondary" : "outline"}>
+                  {group.isSystem ? "System" : "Custom"}
+                </Badge>
+                {group.categories.length === 0 && (
+                  <DeleteButton
+                    label={`Delete ${group.name}`}
+                    description="Only empty groups can be deleted."
+                    disabled={pending}
+                    onDelete={() => deleteCategoryGroup(group.id)}
+                    onError={setError}
+                    onDeleted={refresh}
+                  />
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="divide-y px-0">
+              {group.categories.length === 0 ? (
+                <p className="px-4 py-3 text-sm text-muted-foreground">No categories in this group.</p>
+              ) : (
+                group.categories.map((category) => (
+                  <div key={category.id} className="flex min-h-11 items-center gap-3 px-4 py-2">
+                    <CategoryIconPicker
+                      value={category.icon}
+                      onChange={(icon) => handleCategoryIcon(category.id, icon)}
+                      label={`Change icon for ${category.name}`}
+                      disabled={pending}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <EditableText
+                        value={category.name}
+                        onSave={(name) => handleRenameCategory(category.id, name)}
+                        editLabel={`Rename category ${category.name}`}
+                        className="text-sm font-medium"
+                      />
+                    </div>
+                    {!category.isSystem && !category.isIncome && (
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Checkbox
+                          checked={category.includeTransferInSpending}
+                          onCheckedChange={(checked) => handleReportingChange(category.id, checked)}
+                          aria-label={`Count transfers as spending for ${category.name}`}
+                          disabled={pending}
+                        />
+                        Count transfers as spending
+                      </label>
+                    )}
+                    {category.isIncome && <Badge variant="secondary">Income</Badge>}
+                    <Badge variant={category.isSystem ? "secondary" : "outline"}>
+                      {category.isSystem ? "System" : "Custom"}
+                    </Badge>
+                    <CategoryEditDialog
+                      category={{
+                        id: category.id,
+                        name: category.name,
+                        groupId: group.id,
+                        isIncome: category.isIncome,
+                      }}
+                      groups={groups}
+                      disabled={pending}
+                      onError={setError}
+                      onSaved={refresh}
+                    />
+                    <CategoryDeleteDialog
+                      category={{ id: category.id, name: category.name }}
+                      replacementOptions={replacementOptions}
+                      disabled={pending}
+                      onDeleted={refresh}
+                    />
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <p className="text-xs text-muted-foreground">
+        System categories come with Ledgr and drive automatic Plaid categorization. Renaming or
+        moving one keeps that working; deleting one sends its Plaid matches to AI categorization
+        instead. Deleting a category that is in use moves its transactions, rules, budgets,
+        merchants, and recurring items to a category you choose.
+      </p>
+    </div>
+  );
+}

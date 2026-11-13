@@ -1,8 +1,9 @@
-import { eq, ilike, gte, lte, lt, gt, isNull, desc, sql, inArray, type SQL } from "drizzle-orm";
+import { eq, and, ilike, gte, lte, lt, gt, isNull, desc, sql, inArray, type SQL } from "drizzle-orm";
 import { db as defaultDb, type LedgrDb } from "@/db";
 import { transactions, categories, categoryGroups, merchants, accounts, transactionSplits, type CategorySource } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
-import { notDeleted, encodeCursor, decodeCursor, countRows } from "@/lib/query-helpers";
+import { includedInSpending } from "@/queries/shared-conditions";
+import { notDeleted, notHidden, encodeCursor, decodeCursor, countRows } from "@/lib/query-helpers";
 
 export interface TransactionFilters {
   dateFrom?: string;
@@ -14,6 +15,8 @@ export interface TransactionFilters {
   amountMin?: number;
   amountMax?: number;
   transactionType?: "expense" | "credits" | "transfer";
+  /** `true` shows only hidden rows (an audit view); omitted excludes them — never additive. */
+  hidden?: boolean;
 }
 
 export interface TransactionRow {
@@ -40,8 +43,10 @@ export interface TransactionRow {
   hasSplits: boolean;
   isTransfer: boolean;
   transferPairId: string | null;
+  transferSource: string | null;
+  isHidden: boolean;
   categorySource: CategorySource | null;
-  plaidTransactionId: string | null;
+  externalId: string | null;
 }
 
 export interface TransactionPage {
@@ -72,8 +77,10 @@ const transactionSelectFields = {
   notes: transactions.notes,
   isTransfer: transactions.isTransfer,
   transferPairId: transactions.transferPairId,
+  transferSource: transactions.transferSource,
+  isHidden: transactions.isHidden,
   categorySource: transactions.categorySource,
-  plaidTransactionId: transactions.plaidTransactionId,
+  externalId: transactions.externalId,
 };
 
 export function baseTransactionQuery(db: LedgrDb, householdId: string) {
@@ -83,16 +90,49 @@ export function baseTransactionQuery(db: LedgrDb, householdId: string) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Drizzle's chained join types aren't expressible in a simple generic
   function joins(query: any) {
     return query
-      .leftJoin(accounts, eq(transactions.accountId, accounts.id))
-      .leftJoin(merchants, eq(transactions.merchantId, merchants.id))
-      .leftJoin(categories, eq(transactions.categoryId, categories.id))
-      .leftJoin(categoryGroups, eq(categories.groupId, categoryGroups.id));
+      .leftJoin(
+        accounts,
+        and(
+          eq(transactions.accountId, accounts.id),
+          eq(accounts.householdId, householdId),
+        ),
+      )
+      .leftJoin(
+        merchants,
+        and(
+          eq(transactions.merchantId, merchants.id),
+          eq(merchants.householdId, householdId),
+        ),
+      )
+      .leftJoin(
+        categories,
+        and(
+          eq(transactions.categoryId, categories.id),
+          eq(categories.householdId, householdId),
+        ),
+      )
+      .leftJoin(
+        categoryGroups,
+        and(
+          eq(categories.groupId, categoryGroups.id),
+          eq(categoryGroups.householdId, householdId),
+        ),
+      );
   }
   return { scoped, select, from, joins };
 }
 
-function buildTransactionConditions(filters: TransactionFilters): (SQL | undefined)[] {
-  const conditions: (SQL | undefined)[] = [notDeleted(transactions)];
+function buildTransactionConditions(
+  filters: TransactionFilters,
+  spendingIncluded: SQL,
+): (SQL | undefined)[] {
+  // Hidden rows are excluded by default, same as deleted ones — not just
+  // when some other filter happens to be set. `filters.hidden === true`
+  // flips this into the one dedicated view that shows them.
+  const conditions: (SQL | undefined)[] = [
+    notDeleted(transactions),
+    filters.hidden === true ? eq(transactions.isHidden, true) : notHidden(transactions),
+  ];
 
   if (filters.dateFrom) {
     conditions.push(gte(transactions.date, filters.dateFrom));
@@ -121,8 +161,10 @@ function buildTransactionConditions(filters: TransactionFilters): (SQL | undefin
     conditions.push(sql`abs(${transactions.normalizedAmount}) <= ${filters.amountMax}`);
   }
   if (filters.transactionType === "expense") {
+    // Same population as the summary's expense total and the Reports spending
+    // figures: transfers count only when their category opts in.
     conditions.push(lt(transactions.normalizedAmount, 0));
-    conditions.push(eq(transactions.isTransfer, false));
+    conditions.push(spendingIncluded);
   }
   if (filters.transactionType === "credits") {
     conditions.push(gt(transactions.normalizedAmount, 0));
@@ -142,7 +184,25 @@ export async function getTransactions(
   cursor: string | null = null,
   db: LedgrDb = defaultDb,
 ): Promise<TransactionPage> {
-  const conditions = buildTransactionConditions(filters);
+  const spendingIncluded = await includedInSpending(householdId, db);
+  return fetchTransactionPage(householdId, buildTransactionConditions(filters, spendingIncluded), limit, cursor, db);
+}
+
+/**
+ * Fetch one page of transactions for an arbitrary set of conditions.
+ *
+ * `getTransactions` builds those conditions from the transactions-page filter
+ * shape; the Reports drill-down builds them from the spending/income definition
+ * instead, so that a drill-down lists exactly the rows its figure counted.
+ */
+export async function fetchTransactionPage(
+  householdId: string,
+  baseConditions: (SQL | undefined)[],
+  limit = 50,
+  cursor: string | null = null,
+  db: LedgrDb = defaultDb,
+): Promise<TransactionPage> {
+  const conditions = [...baseConditions];
 
   // Cursor conditions stay here — not in the shared builder
   const decoded = cursor ? decodeCursor(cursor) : null;
@@ -183,8 +243,10 @@ export async function getTransactions(
     hasSplits: splitSet.has(row.id),
     isTransfer: Boolean(row.isTransfer),
     transferPairId: row.transferPairId ?? null,
+    transferSource: row.transferSource ?? null,
+    isHidden: Boolean(row.isHidden),
     categorySource: row.categorySource ?? null,
-    plaidTransactionId: row.plaidTransactionId ?? null,
+    externalId: row.externalId ?? null,
   }));
 
   const nextCursor = hasMore
@@ -219,14 +281,15 @@ export async function getTransactionSummary(
   filters: TransactionFilters,
   db: LedgrDb = defaultDb,
 ): Promise<TransactionSummary> {
-  const conditions = buildTransactionConditions(filters);
+  const spendingIncluded = await includedInSpending(householdId, db);
+  const conditions = buildTransactionConditions(filters, spendingIncluded);
   const base = baseTransactionQuery(db, householdId);
 
   const [result] = await base.joins(
     db
       .select({
         count: countRows(),
-        totalExpense: sql<number>`coalesce(sum(CASE WHEN ${transactions.normalizedAmount} < 0 AND ${transactions.isTransfer} = false AND ${transactions.pending} = false THEN abs(${transactions.normalizedAmount}) ELSE 0 END), 0)`.mapWith(Number),
+        totalExpense: sql<number>`coalesce(sum(CASE WHEN ${transactions.normalizedAmount} < 0 AND ${spendingIncluded} AND ${transactions.pending} = false THEN abs(${transactions.normalizedAmount}) ELSE 0 END), 0)`.mapWith(Number),
         totalIncome: sql<number>`coalesce(sum(CASE WHEN ${transactions.normalizedAmount} > 0 AND ${transactions.isTransfer} = false AND ${transactions.pending} = false THEN ${transactions.normalizedAmount} ELSE 0 END), 0)`.mapWith(Number),
       })
       .from(transactions)
@@ -244,6 +307,39 @@ export async function getTransactionSummary(
     totalIncome,
     net: totalIncome - totalExpense,
   };
+}
+
+/**
+ * Transactions flagged by the single-leg pattern pass (transfer-detection.ts)
+ * as a likely transfer but too low-confidence to auto-exclude — a bare P2P
+ * processor name (Zelle, Venmo, Cash App, PayPal). Still counts toward
+ * spend/income until a human confirms or rejects it via the review queue.
+ */
+export async function getSuggestedTransfers(
+  householdId: string,
+  db: LedgrDb = defaultDb,
+): Promise<TransactionRow[]> {
+  const { rows } = await fetchTransactionPage(
+    householdId,
+    [notDeleted(transactions), notHidden(transactions), eq(transactions.transferSource, "suggested")],
+    200,
+    null,
+    db,
+  );
+  return rows;
+}
+
+export async function getSuggestedTransferCount(
+  householdId: string,
+  db: LedgrDb = defaultDb,
+): Promise<number> {
+  const scoped = scopedQuery(householdId, db);
+  const [result] = await db
+    .select({ count: countRows() })
+    .from(transactions)
+    .where(scoped.where(transactions, notDeleted(transactions), notHidden(transactions), eq(transactions.transferSource, "suggested")))
+    .limit(1);
+  return result?.count ?? 0;
 }
 
 export async function getTransactionDetail(
@@ -286,8 +382,10 @@ export async function getTransactionDetail(
     reviewed: Boolean(row.reviewed),
     isTransfer: Boolean(row.isTransfer),
     transferPairId: row.transferPairId ?? null,
+    transferSource: row.transferSource ?? null,
+    isHidden: Boolean(row.isHidden),
     categorySource: row.categorySource ?? null,
-    plaidTransactionId: row.plaidTransactionId ?? null,
+    externalId: row.externalId ?? null,
     hasSplits: splits.length > 0,
     splits,
   };

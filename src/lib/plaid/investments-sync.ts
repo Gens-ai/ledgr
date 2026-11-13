@@ -13,8 +13,8 @@ import { decrypt } from "@/lib/encryption";
 import { todayDateString } from "@/lib/date-utils";
 import { eq, and, isNull } from "drizzle-orm";
 import type { LedgrDb } from "@/db";
-import { accounts, plaidItems } from "@/db/schema";
-import type { PlaidHolding, PlaidInvestmentTxn } from "./schemas";
+import { accounts, bankConnections } from "@/db/schema";
+import type { PlaidHolding, PlaidInvestmentTxn, PlaidAccountBalances } from "./schemas";
 import type { InvestmentSyncResult } from "./investments-process";
 import { processHoldings, processInvestmentTransactions } from "./investments-process";
 import { applyInvestmentsToDb } from "./investments-apply";
@@ -26,12 +26,12 @@ const MAX_INV_TXN_PAGES = 50;
 async function fetchHoldings(
   client: PlaidApi,
   accessToken: string,
-): Promise<{ holdings: PlaidHolding[]; securities: PlaidSecurity[] }> {
+): Promise<{ holdings: PlaidHolding[]; securities: PlaidSecurity[]; accounts: PlaidAccountBalances[] }> {
   const response = await retryWithBackoff(() =>
     client.investmentsHoldingsGet({ access_token: accessToken })
   );
   const parsed = PlaidHoldingsResponseSchema.parse(response.data);
-  return { holdings: parsed.holdings, securities: parsed.securities };
+  return { holdings: parsed.holdings, securities: parsed.securities, accounts: parsed.accounts };
 }
 
 async function fetchAllInvestmentTransactionPages(
@@ -95,32 +95,32 @@ async function doInvestmentSync(
   db: LedgrDb,
 ): Promise<InvestmentSyncResult> {
   const [item] = await db
-    .select({ accessToken: plaidItems.accessToken })
-    .from(plaidItems)
-    .where(and(eq(plaidItems.id, itemId), eq(plaidItems.householdId, householdId)))
+    .select({ credential: bankConnections.credential })
+    .from(bankConnections)
+    .where(and(eq(bankConnections.id, itemId), eq(bankConnections.householdId, householdId)))
     .limit(1);
 
   if (!item) {
     return { success: false, error: "Item not found" };
   }
 
-  const accessToken = decrypt(item.accessToken);
+  const accessToken = decrypt(item.credential);
   const client = getPlaidClient();
 
   const itemAccounts = await db
-    .select({ id: accounts.id, plaidAccountId: accounts.plaidAccountId })
+    .select({ id: accounts.id, externalAccountId: accounts.externalAccountId })
     .from(accounts)
-    .where(and(eq(accounts.plaidItemId, itemId), isNull(accounts.deletedAt)));
+    .where(and(eq(accounts.bankConnectionId, itemId), isNull(accounts.deletedAt)));
 
   const plaidToInternalAccount = new Map<string, string>();
   for (const acc of itemAccounts) {
-    if (acc.plaidAccountId) {
-      plaidToInternalAccount.set(acc.plaidAccountId, acc.id);
+    if (acc.externalAccountId) {
+      plaidToInternalAccount.set(acc.externalAccountId, acc.id);
     }
   }
 
   try {
-    const { holdings: rawHoldings, securities: holdingSecurities } =
+    const { holdings: rawHoldings, securities: holdingSecurities, accounts: accountBalances } =
       await fetchHoldings(client, accessToken);
 
     const endDate = todayDateString();
@@ -139,7 +139,7 @@ async function doInvestmentSync(
     const holdingRows = processHoldings(rawHoldings, mergedSecurities, householdId, plaidToInternalAccount);
     const txnRows = processInvestmentTransactions(rawTxns, mergedSecurities, plaidToInternalAccount);
 
-    const result = await applyInvestmentsToDb(db, holdingRows, txnRows, itemId);
+    const result = await applyInvestmentsToDb(db, holdingRows, txnRows, itemId, accountBalances);
 
     return {
       success: true,
@@ -154,16 +154,16 @@ async function doInvestmentSync(
     }
 
     if (errorCode && REAUTH_ERROR_CODES.has(errorCode)) {
-      await db.update(plaidItems)
+      await db.update(bankConnections)
         .set({ status: "reauth_required" })
-        .where(eq(plaidItems.id, itemId));
+        .where(eq(bankConnections.id, itemId));
       return { success: false, error: `Reauth required: ${errorCode}` };
     }
 
     if (errorCode && TRANSIENT_ERROR_CODES.has(errorCode)) {
-      await db.update(plaidItems)
+      await db.update(bankConnections)
         .set({ status: "error" })
-        .where(eq(plaidItems.id, itemId));
+        .where(eq(bankConnections.id, itemId));
       return { success: false, error: `Transient error: ${errorCode}` };
     }
 

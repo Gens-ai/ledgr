@@ -29,6 +29,8 @@ import {
   updateTransactionFields,
   upsertSplit,
   deleteSplit,
+  confirmTransferSuggestionScoped,
+  rejectTransferSuggestionScoped,
 } from "@/actions/transaction-detail";
 
 let db: LedgrDb;
@@ -91,7 +93,7 @@ describe("getTransactionDetail", () => {
     expect(detail!.name).toBe("Whole Foods");
     expect(detail!.categorySource).toBe("manual");
     expect(detail!.isTransfer).toBe(false);
-    expect(detail!.plaidTransactionId).toBeNull();
+    expect(detail!.externalId).toBeNull();
     expect(detail!.splits).toHaveLength(2);
     const sortedSplits = [...detail!.splits].sort((a, b) =>
       a.categoryName!.localeCompare(b.categoryName!),
@@ -150,7 +152,8 @@ describe("updateTransactionFields", () => {
       name: "Plaid Txn",
       amount: 1200,
       normalizedAmount: -1200,
-      plaidTransactionId: "plaid-abc-123",
+      externalId: "plaid-abc-123",
+      provider: "plaid",
     });
   });
 
@@ -195,6 +198,26 @@ describe("updateTransactionFields", () => {
       db,
     );
     expect(result).toEqual({ error: "Cannot edit date on bank-synced transactions" });
+  });
+
+  it("toggles isHidden on and back off", async () => {
+    const hideResult = await updateTransactionFields(editTxnId, { isHidden: true }, db);
+    expect(hideResult).toEqual({ success: true });
+
+    const [hiddenRow] = await db
+      .select({ isHidden: transactions.isHidden })
+      .from(transactions)
+      .where(eq(transactions.id, editTxnId));
+    expect(hiddenRow!.isHidden).toBe(true);
+
+    const unhideResult = await updateTransactionFields(editTxnId, { isHidden: false }, db);
+    expect(unhideResult).toEqual({ success: true });
+
+    const [unhiddenRow] = await db
+      .select({ isHidden: transactions.isHidden })
+      .from(transactions)
+      .where(eq(transactions.id, editTxnId));
+    expect(unhiddenRow!.isHidden).toBe(false);
   });
 });
 
@@ -305,6 +328,65 @@ describe("deleteSplit", () => {
     const after = await getTransactionDetail(householdId, delTxnId, db);
     expect(after!.hasSplits).toBe(false);
     expect(after!.splits).toHaveLength(0);
+  });
+});
+
+describe("confirmTransferSuggestionScoped / rejectTransferSuggestionScoped", () => {
+  it("confirms a suggested transfer", async () => {
+    const suggestedId = uuid();
+    await db.insert(transactions).values({
+      id: suggestedId,
+      accountId,
+      householdId,
+      date: "2026-05-11",
+      originalName: "ZELLE",
+      name: "Zelle",
+      amount: 7000,
+      normalizedAmount: -7000,
+      isTransfer: false,
+      transferSource: "suggested",
+    });
+
+    const result = await confirmTransferSuggestionScoped(householdId, suggestedId, db);
+    expect(result).toEqual({ success: true });
+
+    const [row] = await db
+      .select({ isTransfer: transactions.isTransfer, transferSource: transactions.transferSource })
+      .from(transactions)
+      .where(eq(transactions.id, suggestedId));
+    expect(row!.isTransfer).toBe(true);
+    expect(row!.transferSource).toBe("manual");
+  });
+
+  it("rejects a suggested transfer, keeping it as real spending and blocking re-suggestion", async () => {
+    const suggestedId = uuid();
+    await db.insert(transactions).values({
+      id: suggestedId,
+      accountId,
+      householdId,
+      date: "2026-05-11",
+      originalName: "ZELLE",
+      name: "Zelle",
+      amount: 4200,
+      normalizedAmount: -4200,
+      isTransfer: false,
+      transferSource: "suggested",
+    });
+
+    const result = await rejectTransferSuggestionScoped(householdId, suggestedId, db);
+    expect(result).toEqual({ success: true });
+
+    const [row] = await db
+      .select({ isTransfer: transactions.isTransfer, transferSource: transactions.transferSource })
+      .from(transactions)
+      .where(eq(transactions.id, suggestedId));
+    expect(row!.isTransfer).toBe(false);
+    expect(row!.transferSource).toBe("manual_rejected");
+  });
+
+  it("returns an error for a transaction in a different household", async () => {
+    const result = await confirmTransferSuggestionScoped("other-household", txnId, db);
+    expect(result).toEqual({ error: "Transaction not found" });
   });
 });
 

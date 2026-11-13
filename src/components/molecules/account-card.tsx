@@ -1,5 +1,6 @@
 "use client";
 
+import { accountDisplayName } from "@/lib/account-name";
 import { Button } from "@/components/ui/button";
 import { AccountTypeIcon } from "@/components/atoms/account-type-icon";
 import { BalanceDisplay } from "@/components/atoms/balance-display";
@@ -9,20 +10,29 @@ import type { AccountRow } from "@/queries/accounts";
 
 interface AccountCardProps {
   account: AccountRow;
+  /**
+   * Shown when the list is grouped by type, where the institution is the one
+   * piece of context the grouping takes away. Omitted under institution
+   * grouping, which already states it in the card header.
+   */
+  institutionName?: string;
   onEdit: (account: AccountRow) => void;
 }
 
-export function AccountCard({ account, onEdit }: AccountCardProps) {
+export function AccountCard({ account, institutionName, onEdit }: AccountCardProps) {
   return (
     <div className="group/card flex items-center justify-between px-4 py-3 hover:bg-muted/50 transition-colors">
       <div className="flex items-center gap-3 min-w-0">
         <AccountTypeIcon type={account.type as AccountType} />
         <div className="min-w-0">
-          <span className="text-sm font-medium truncate block">{account.name}</span>
-          {account.officialName && account.officialName !== account.name && (
-            <p className="text-xs text-muted-foreground truncate">
-              {account.officialName}
-            </p>
+          <span className="text-sm font-medium truncate block">{accountDisplayName(account.name)}</span>
+          {institutionName ? (
+            <p className="text-xs text-muted-foreground truncate">{institutionName}</p>
+          ) : (
+            account.officialName &&
+            account.officialName !== account.name && (
+              <p className="text-xs text-muted-foreground truncate">{account.officialName}</p>
+            )
           )}
         </div>
       </div>
@@ -33,7 +43,7 @@ export function AccountCard({ account, onEdit }: AccountCardProps) {
           size="sm"
           className="sm:opacity-0 sm:group-hover/card:opacity-100 group-focus-within/card:opacity-100 transition-opacity h-7 w-7 p-0"
           onClick={() => onEdit(account)}
-          aria-label={`Edit ${account.name}`}
+          aria-label={`Edit ${accountDisplayName(account.name)}`}
         >
           <Pencil className="size-3.5" />
         </Button>

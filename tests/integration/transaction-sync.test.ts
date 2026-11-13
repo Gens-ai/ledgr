@@ -16,7 +16,7 @@ import { resetPlaidClient } from "@/lib/plaid/client";
 import {
   households,
   householdMembers,
-  plaidItems,
+  bankConnections,
   accounts,
   transactions,
   merchants,
@@ -76,10 +76,11 @@ describe("transaction sync integration", () => {
       createdAt: now,
     });
 
-    await testDb.insert(plaidItems).values({
+    await testDb.insert(bankConnections).values({
       id: PLAID_ITEM_ID,
       householdId: HOUSEHOLD_ID,
-      accessToken: encrypt("access-sandbox-test-token"),
+      provider: "plaid",
+      credential: encrypt("access-sandbox-test-token"),
       institutionName: "Chase",
       status: "active",
       createdAt: now,
@@ -89,8 +90,8 @@ describe("transaction sync integration", () => {
     await testDb.insert(accounts).values({
       id: "acc-internal-checking",
       householdId: HOUSEHOLD_ID,
-      plaidItemId: PLAID_ITEM_ID,
-      plaidAccountId: "plaid-acc-checking",
+      bankConnectionId: PLAID_ITEM_ID,
+      externalAccountId: "plaid-acc-checking",
       name: "Checking",
       type: "checking",
       createdAt: now,
@@ -164,7 +165,7 @@ describe("transaction sync integration", () => {
     const txns = await db.select().from(transactions).where(eq(transactions.householdId, HOUSEHOLD_ID));
     expect(txns).toHaveLength(2);
 
-    const [item] = await db.select().from(plaidItems).where(eq(plaidItems.id, PLAID_ITEM_ID));
+    const [item] = await db.select().from(bankConnections).where(eq(bankConnections.id, PLAID_ITEM_ID));
     expect(item?.syncCursor).toBe("cursor_final");
 
     expect(callCount).toBe(2);
@@ -250,7 +251,8 @@ describe("transaction sync integration", () => {
       id: uuid(),
       accountId: "acc-internal-checking",
       householdId: HOUSEHOLD_ID,
-      plaidTransactionId: TEST_TXN_IDS.removed1,
+      externalId: TEST_TXN_IDS.removed1,
+      provider: "plaid",
       date: "2026-05-01",
       originalName: "OLD TRANSACTION",
       name: "Old Transaction",
@@ -270,7 +272,7 @@ describe("transaction sync integration", () => {
     const [txn] = await db
       .select()
       .from(transactions)
-      .where(eq(transactions.plaidTransactionId, TEST_TXN_IDS.removed1));
+      .where(eq(transactions.externalId, TEST_TXN_IDS.removed1));
 
     expect(txn).toBeDefined();
     expect(txn?.deletedAt).not.toBeNull();
@@ -286,7 +288,8 @@ describe("transaction sync integration", () => {
         id: uuid(),
         accountId: "acc-internal-checking",
         householdId: HOUSEHOLD_ID,
-        plaidTransactionId: TEST_TXN_IDS.removed1,
+        externalId: TEST_TXN_IDS.removed1,
+        provider: "plaid",
         date: "2026-05-01",
         originalName: "OLD TRANSACTION 1",
         name: "Old Transaction 1",
@@ -301,7 +304,8 @@ describe("transaction sync integration", () => {
         id: uuid(),
         accountId: "acc-internal-checking",
         householdId: HOUSEHOLD_ID,
-        plaidTransactionId: TEST_TXN_IDS.removed2,
+        externalId: TEST_TXN_IDS.removed2,
+        provider: "plaid",
         date: "2026-05-02",
         originalName: "OLD TRANSACTION 2",
         name: "Old Transaction 2",
@@ -340,14 +344,14 @@ describe("transaction sync integration", () => {
       .select()
       .from(transactions)
       .where(
-        eq(transactions.plaidTransactionId, TEST_TXN_IDS.removed1),
+        eq(transactions.externalId, TEST_TXN_IDS.removed1),
       );
     expect(removedTxns[0]?.deletedAt).not.toBeNull();
 
     const [txn2] = await db
       .select()
       .from(transactions)
-      .where(eq(transactions.plaidTransactionId, TEST_TXN_IDS.removed2));
+      .where(eq(transactions.externalId, TEST_TXN_IDS.removed2));
     expect(txn2?.deletedAt).not.toBeNull();
   });
 
@@ -360,7 +364,8 @@ describe("transaction sync integration", () => {
       id: uuid(),
       accountId: "acc-internal-checking",
       householdId: HOUSEHOLD_ID,
-      plaidTransactionId: TEST_TXN_IDS.modified1,
+      externalId: TEST_TXN_IDS.modified1,
+      provider: "plaid",
       date: "2026-05-01",
       originalName: "AMAZON.COM OLD",
       name: "Amazon",
@@ -380,10 +385,53 @@ describe("transaction sync integration", () => {
     const txns = await db
       .select()
       .from(transactions)
-      .where(eq(transactions.plaidTransactionId, TEST_TXN_IDS.modified1));
+      .where(eq(transactions.externalId, TEST_TXN_IDS.modified1));
 
     expect(txns).toHaveLength(1);
     expect(txns[0].amount).toBe(2500);
+  });
+
+  it("preserves a user's manual transfer decision across a modified-transaction sync", async () => {
+    await setup();
+    await seedTestData(db);
+
+    const now = new Date();
+    await db.insert(transactions).values({
+      id: uuid(),
+      accountId: "acc-internal-checking",
+      householdId: HOUSEHOLD_ID,
+      externalId: TEST_TXN_IDS.modified1,
+      provider: "plaid",
+      date: "2026-05-01",
+      originalName: "AMAZON.COM OLD",
+      name: "Amazon",
+      amount: 1000,
+      normalizedAmount: -1000,
+      currency: "USD",
+      pending: false,
+      // The user said this is a transfer. The incoming modified payload has
+      // personal_finance_category: null, so PFC would derive isTransfer=false.
+      isTransfer: true,
+      transferSource: "manual",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    server.use(syncWithModifiedHandler);
+
+    const result = await syncInstitution(PLAID_ITEM_ID, HOUSEHOLD_ID, db);
+    expect(result.success).toBe(true);
+
+    const [row] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.externalId, TEST_TXN_IDS.modified1));
+
+    // The user's decision survives...
+    expect(row.isTransfer).toBe(true);
+    expect(row.transferSource).toBe("manual");
+    // ...while the rest of the row still updates normally.
+    expect(row.amount).toBe(2500);
   });
 
   it("pending-to-posted transition soft-deletes pending row", async () => {
@@ -395,7 +443,8 @@ describe("transaction sync integration", () => {
       id: uuid(),
       accountId: "acc-internal-checking",
       householdId: HOUSEHOLD_ID,
-      plaidTransactionId: TEST_TXN_IDS.pending1,
+      externalId: TEST_TXN_IDS.pending1,
+      provider: "plaid",
       date: "2026-05-03",
       originalName: "UBER *TRIP",
       name: "Uber",
@@ -440,13 +489,13 @@ describe("transaction sync integration", () => {
     const [pendingTxn] = await db
       .select()
       .from(transactions)
-      .where(eq(transactions.plaidTransactionId, TEST_TXN_IDS.pending1));
+      .where(eq(transactions.externalId, TEST_TXN_IDS.pending1));
     expect(pendingTxn?.deletedAt).not.toBeNull();
 
     const [postedTxn] = await db
       .select()
       .from(transactions)
-      .where(eq(transactions.plaidTransactionId, TEST_TXN_IDS.posted1));
+      .where(eq(transactions.externalId, TEST_TXN_IDS.posted1));
     expect(postedTxn).toBeDefined();
     expect(postedTxn?.pending).toBe(false);
   });
@@ -460,7 +509,8 @@ describe("transaction sync integration", () => {
       id: uuid(),
       accountId: "acc-internal-checking",
       householdId: HOUSEHOLD_ID,
-      plaidTransactionId: TEST_TXN_IDS.pending1,
+      externalId: TEST_TXN_IDS.pending1,
+      provider: "plaid",
       date: "2026-05-03",
       originalName: "UBER *TRIP",
       name: "Uber",
@@ -508,7 +558,7 @@ describe("transaction sync integration", () => {
     const [pendingTxn] = await db
       .select()
       .from(transactions)
-      .where(eq(transactions.plaidTransactionId, TEST_TXN_IDS.pending1));
+      .where(eq(transactions.externalId, TEST_TXN_IDS.pending1));
     // The replacement never got inserted, so the pending row must survive —
     // otherwise the transaction silently vanishes.
     expect(pendingTxn?.deletedAt).toBeNull();
@@ -524,10 +574,10 @@ describe("transaction sync integration", () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
 
-    const [item] = await db.select().from(plaidItems).where(eq(plaidItems.id, PLAID_ITEM_ID));
+    const [item] = await db.select().from(bankConnections).where(eq(bankConnections.id, PLAID_ITEM_ID));
     expect(item?.syncCursor).toBe("cursor_empty");
 
-    const logs = await db.select().from(syncLog).where(eq(syncLog.plaidItemId, PLAID_ITEM_ID));
+    const logs = await db.select().from(syncLog).where(eq(syncLog.connectionId, PLAID_ITEM_ID));
     expect(logs).toHaveLength(1);
     expect(logs[0].addedCount).toBe(0);
     expect(logs[0].modifiedCount).toBe(0);
@@ -557,10 +607,11 @@ describe("transaction sync integration", () => {
       createdAt: now,
     });
 
-    await db.insert(plaidItems).values({
+    await db.insert(bankConnections).values({
       id: PLAID_ITEM_B,
       householdId: HOUSEHOLD_B,
-      accessToken: encrypt("access-sandbox-test-token"),
+      provider: "plaid",
+      credential: encrypt("access-sandbox-test-token"),
       institutionName: "Bank B",
       status: "active",
       createdAt: now,
@@ -570,8 +621,8 @@ describe("transaction sync integration", () => {
     await db.insert(accounts).values({
       id: "acc-b-checking",
       householdId: HOUSEHOLD_B,
-      plaidItemId: PLAID_ITEM_B,
-      plaidAccountId: "plaid-acc-b",
+      bankConnectionId: PLAID_ITEM_B,
+      externalAccountId: "plaid-acc-b",
       name: "B Checking",
       type: "checking",
       createdAt: now,
@@ -582,7 +633,8 @@ describe("transaction sync integration", () => {
       id: uuid(),
       accountId: "acc-b-checking",
       householdId: HOUSEHOLD_B,
-      plaidTransactionId: "txn-household-b-only",
+      externalId: "txn-household-b-only",
+      provider: "plaid",
       date: "2026-05-01",
       originalName: "HOUSEHOLD B TXN",
       name: "Household B Txn",
@@ -601,7 +653,7 @@ describe("transaction sync integration", () => {
     const [bTxn] = await db
       .select()
       .from(transactions)
-      .where(eq(transactions.plaidTransactionId, "txn-household-b-only"));
+      .where(eq(transactions.externalId, "txn-household-b-only"));
 
     expect(bTxn).toBeDefined();
     expect(bTxn?.deletedAt).toBeNull();
@@ -618,7 +670,8 @@ describe("transaction sync integration", () => {
       id: uuid(),
       accountId: "acc-internal-checking",
       householdId: HOUSEHOLD_ID,
-      plaidTransactionId: sharedPlaidId,
+      externalId: sharedPlaidId,
+      provider: "plaid",
       date: "2026-05-01",
       originalName: "FIRST TRANSACTION",
       name: "First Transaction",
@@ -635,7 +688,8 @@ describe("transaction sync integration", () => {
         id: uuid(),
         accountId: "acc-internal-checking",
         householdId: HOUSEHOLD_ID,
-        plaidTransactionId: sharedPlaidId,
+        externalId: sharedPlaidId,
+        provider: "plaid",
         date: "2026-05-02",
         originalName: "DUPLICATE TRANSACTION",
         name: "Duplicate Transaction",
@@ -654,9 +708,9 @@ describe("transaction sync integration", () => {
     await seedTestData(db);
 
     await db
-      .update(plaidItems)
+      .update(bankConnections)
       .set({ syncCursor: "cursor_before" })
-      .where(eq(plaidItems.id, PLAID_ITEM_ID));
+      .where(eq(bankConnections.id, PLAID_ITEM_ID));
 
     server.use(
       http.post("https://sandbox.plaid.com/transactions/sync", () =>
@@ -694,7 +748,156 @@ describe("transaction sync integration", () => {
     const txns = await db.select().from(transactions).where(eq(transactions.householdId, HOUSEHOLD_ID));
     expect(txns).toHaveLength(0);
 
-    const [item] = await db.select().from(plaidItems).where(eq(plaidItems.id, PLAID_ITEM_ID));
+    const [item] = await db.select().from(bankConnections).where(eq(bankConnections.id, PLAID_ITEM_ID));
     expect(item?.syncCursor).toBe("cursor_advanced");
+  });
+
+  it("tags investment-account transactions as non-spending, leaving other accounts untouched", async () => {
+    await setup();
+    await seedTestData(db);
+
+    const now = new Date();
+    await db.insert(accounts).values({
+      id: "acc-internal-investment",
+      householdId: HOUSEHOLD_ID,
+      bankConnectionId: PLAID_ITEM_ID,
+      externalAccountId: "plaid-acc-investment",
+      name: "Portfolio Value (2688)",
+      type: "investment",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    server.use(
+      http.post("https://sandbox.plaid.com/transactions/sync", () =>
+        HttpResponse.json({
+          added: [
+            {
+              transaction_id: "txn-investment-fill",
+              account_id: "plaid-acc-investment",
+              amount: 369.66,
+              iso_currency_code: "USD",
+              date: "2026-09-01",
+              name: "Buy XPO Fill",
+              merchant_name: null,
+              logo_url: null,
+              pending: false,
+              pending_transaction_id: null,
+              personal_finance_category: { primary: "GENERAL_SERVICES", detailed: "GENERAL_SERVICES_OTHER_GENERAL_SERVICES" },
+            },
+            {
+              transaction_id: "txn-checking-groceries",
+              account_id: "plaid-acc-checking",
+              amount: 45.0,
+              iso_currency_code: "USD",
+              date: "2026-09-01",
+              name: "Grocery Store",
+              merchant_name: "Grocery Store",
+              logo_url: null,
+              pending: false,
+              pending_transaction_id: null,
+              personal_finance_category: { primary: "FOOD_AND_DRINK", detailed: "FOOD_AND_DRINK_GROCERIES" },
+            },
+          ],
+          modified: [],
+          removed: [],
+          has_more: false,
+          next_cursor: "cursor_investment",
+          request_id: "req-sync-investment",
+        }),
+      ),
+    );
+
+    const result = await syncInstitution(PLAID_ITEM_ID, HOUSEHOLD_ID, db);
+    expect(result.success).toBe(true);
+
+    const [investmentTxn] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.externalId, "txn-investment-fill"));
+    expect(investmentTxn?.isTransfer).toBe(true);
+    expect(investmentTxn?.transferSource).toBe("investment_account");
+
+    const [checkingTxn] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.externalId, "txn-checking-groceries"));
+    expect(checkingTxn?.isTransfer).toBe(false);
+    expect(checkingTxn?.transferSource).toBeNull();
+  });
+
+  it("never overwrites a manually-corrected investment-account transaction on re-sync", async () => {
+    await setup();
+    await seedTestData(db);
+
+    const now = new Date();
+    await db.insert(accounts).values({
+      id: "acc-internal-investment",
+      householdId: HOUSEHOLD_ID,
+      bankConnectionId: PLAID_ITEM_ID,
+      externalAccountId: "plaid-acc-investment",
+      name: "Portfolio Value (2688)",
+      type: "investment",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // A user manually decided this row is real spending, not investment noise
+    // (e.g. a mislabeled fee dispute), and rejected the auto-tag.
+    await db.insert(transactions).values({
+      id: "txn-manually-corrected",
+      accountId: "acc-internal-investment",
+      householdId: HOUSEHOLD_ID,
+      externalId: "txn-investment-manual",
+      provider: "plaid",
+      date: "2026-09-01",
+      originalName: "Buy XPO Fill",
+      name: "Buy XPO Fill",
+      amount: 36966,
+      normalizedAmount: -36966,
+      currency: "USD",
+      pending: false,
+      isTransfer: false,
+      transferSource: "manual_rejected",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    server.use(
+      http.post("https://sandbox.plaid.com/transactions/sync", () =>
+        HttpResponse.json({
+          added: [],
+          modified: [
+            {
+              transaction_id: "txn-investment-manual",
+              account_id: "plaid-acc-investment",
+              amount: 369.66,
+              iso_currency_code: "USD",
+              date: "2026-09-01",
+              name: "Buy XPO Fill",
+              merchant_name: null,
+              logo_url: null,
+              pending: false,
+              pending_transaction_id: null,
+              personal_finance_category: { primary: "GENERAL_SERVICES", detailed: "GENERAL_SERVICES_OTHER_GENERAL_SERVICES" },
+            },
+          ],
+          removed: [],
+          has_more: false,
+          next_cursor: "cursor_investment_resync",
+          request_id: "req-sync-investment-resync",
+        }),
+      ),
+    );
+
+    const result = await syncInstitution(PLAID_ITEM_ID, HOUSEHOLD_ID, db);
+    expect(result.success).toBe(true);
+
+    const [row] = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.externalId, "txn-investment-manual"));
+    expect(row?.isTransfer).toBe(false);
+    expect(row?.transferSource).toBe("manual_rejected");
   });
 });

@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export interface DatePresetOption {
@@ -22,6 +23,12 @@ interface DateRangePopoverProps {
   active: boolean;
   /** Text shown after "Date:" on the trigger; null renders a bare "Date". */
   triggerValue: string | null;
+  /**
+   * The dates a named preset resolves to, shown in muted text beside it. A chip
+   * reading only "Last 3 months" never says which three months, and the
+   * resolved range appeared nowhere else on the page.
+   */
+  triggerDetail?: string | null;
   /** Current custom-range input values ("" when unset). */
   from: string;
   to: string;
@@ -29,6 +36,8 @@ interface DateRangePopoverProps {
   onFromChange: (value: string | null) => void;
   onToChange: (value: string | null) => void;
   align?: "start" | "center" | "end";
+  /** Extra classes on the trigger button — e.g. letting it grow to fill a row. */
+  triggerClassName?: string;
 }
 
 /**
@@ -42,30 +51,52 @@ export function DateRangePopover({
   selectedId,
   active,
   triggerValue,
+  triggerDetail,
   from,
   to,
   onSelectPreset,
   onFromChange,
   onToChange,
   align = "start",
+  triggerClassName,
 }: DateRangePopoverProps) {
   const [open, setOpen] = useState(false);
 
-  function handlePreset(id: string) {
-    onSelectPreset(id);
+  // Base UI hands back an array even for single select, and an empty one when
+  // the active item is clicked again. Re-picking the current preset should just
+  // close the popover, not clear the range.
+  function handlePreset(groupValue: string[]) {
+    const id = groupValue[0] ?? selectedId;
+    if (id) onSelectPreset(id);
     setOpen(false);
   }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        render={<Button variant={active ? "default" : "outline"} size="sm" className="h-8 text-xs" />}
+        render={
+          <Button
+            variant={active ? "default" : "outline"}
+            size="sm"
+            className={cn("h-8 text-xs", triggerClassName)}
+          />
+        }
       >
         <CalendarDays className="mr-1 h-3.5 w-3.5" />
         {triggerValue ? (
           <>
             <span className={cn("font-normal", active ? "opacity-70" : "text-muted-foreground")}>Date:</span>
             <span className="ml-1 max-w-[160px] truncate">{triggerValue}</span>
+            {triggerDetail && (
+              <span
+                className={cn(
+                  "ml-1.5 hidden truncate text-xs sm:inline",
+                  active ? "opacity-60" : "text-muted-foreground",
+                )}
+              >
+                {triggerDetail}
+              </span>
+            )}
           </>
         ) : (
           "Date"
@@ -73,24 +104,40 @@ export function DateRangePopover({
         <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
       </PopoverTrigger>
       <PopoverContent className="w-[240px] p-2" align={align}>
-        <div className="flex flex-col">
+        {/* A roving-focus group rather than a stack of buttons, so the presets
+            answer to arrow keys instead of costing one Tab stop each. This
+            cannot be a DropdownMenu: the custom-range inputs below share the
+            popover, and Base UI's menu typeahead has no input guard, so typing
+            a date would move the menu selection instead. */}
+        <ToggleGroup
+          value={selectedId ? [selectedId] : []}
+          onValueChange={handlePreset}
+          orientation="vertical"
+          spacing={0}
+          aria-label="Date range presets"
+          className="w-full"
+        >
           {presets.map((preset) => (
-            <button
+            <ToggleGroupItem
               key={preset.id}
-              type="button"
-              onClick={() => handlePreset(preset.id)}
-              className="flex h-8 items-center justify-between rounded-md px-2 text-sm hover:bg-muted"
+              value={preset.id}
+              className="h-8 w-full justify-between rounded-md px-2 text-sm font-normal"
             >
               {preset.label}
-              {selectedId === preset.id && <Check className="h-3.5 w-3.5" />}
-            </button>
+              <Check
+                aria-hidden
+                className={cn("h-3.5 w-3.5", selectedId !== preset.id && "invisible")}
+              />
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
         <Separator className="my-2" />
         <p className="px-2 pb-1 text-xs text-muted-foreground">Custom range</p>
         <div className="flex items-center gap-1.5 px-1">
           <Input
             type="date"
+            id="date-range-from"
+            name="dateFrom"
             aria-label="From date"
             value={from}
             onChange={(e) => onFromChange(e.target.value || null)}
@@ -99,6 +146,8 @@ export function DateRangePopover({
           <span className="text-xs text-muted-foreground">to</span>
           <Input
             type="date"
+            id="date-range-to"
+            name="dateTo"
             aria-label="To date"
             value={to}
             onChange={(e) => onToChange(e.target.value || null)}

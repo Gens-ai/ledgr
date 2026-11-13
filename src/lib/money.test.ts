@@ -2,14 +2,33 @@ import { describe, it, expect } from "vitest";
 import { test, fc } from "@fast-check/vitest";
 import {
   centsToDisplay,
+  centsToSignedDisplay,
   centsToCompact,
+  centsToWholeDisplay,
   displayToCents,
   plaidAmountToCents,
+  simplefinAmountToCents,
   normalizeAmount,
   parseToCents,
+  plaidBalanceToCents,
 } from "./money";
 
 describe("money utilities", () => {
+  describe("centsToSignedDisplay", () => {
+    it("writes both signs, so a delta never reads as a quantity", () => {
+      expect(centsToSignedDisplay(1250)).toBe("+$12.50");
+      expect(centsToSignedDisplay(-1250)).toBe("-$12.50");
+    });
+
+    it("treats zero as non-negative", () => {
+      expect(centsToSignedDisplay(0)).toBe("+$0.00");
+    });
+
+    it("signs the amount, not the currency symbol", () => {
+      expect(centsToSignedDisplay(-1250, "EUR")).toBe("-€12.50");
+    });
+  });
+
   describe("centsToCompact", () => {
     it("abbreviates thousands and millions", () => {
       expect(centsToCompact(12830412)).toBe("$128.3K");
@@ -26,6 +45,18 @@ describe("money utilities", () => {
     });
   });
 
+  describe("centsToWholeDisplay", () => {
+    it("rounds to whole dollars with thousands separators", () => {
+      expect(centsToWholeDisplay(487367)).toBe("$4,874");
+    });
+    it("preserves the sign without duplicating it inside the number", () => {
+      expect(centsToWholeDisplay(-219200)).toBe("-$2,192");
+    });
+    it("formats zero without a sign", () => {
+      expect(centsToWholeDisplay(0)).toBe("$0");
+    });
+  });
+
   describe("centsToDisplay", () => {
     it("formats positive cents as USD", () => {
       expect(centsToDisplay(1250)).toBe("$12.50");
@@ -38,6 +69,17 @@ describe("money utilities", () => {
     });
     it("formats large amounts with comma separators", () => {
       expect(centsToDisplay(1000000)).toBe("$10,000.00");
+    });
+    // #170: SimpleFIN institutions can send currency: "", and the spec allows
+    // a URL for a custom currency. Intl throws on both.
+    it("falls back to USD for an empty currency code", () => {
+      expect(centsToDisplay(1250, "")).toBe("$12.50");
+    });
+    it("falls back to USD for a currency that is not an ISO 4217 code", () => {
+      expect(centsToDisplay(1250, "https://example.com/points")).toBe("$12.50");
+    });
+    it("keeps a valid non-USD currency", () => {
+      expect(centsToDisplay(1250, "EUR")).toBe("€12.50");
     });
   });
 
@@ -54,39 +96,22 @@ describe("money utilities", () => {
   });
 
   describe("normalizeAmount", () => {
-    it("flips sign for checking expense (positive → negative)", () => {
-      expect(normalizeAmount(1250, "checking")).toBe(-1250);
+    // Normalization is account-type independent: Plaid uses one sign
+    // convention across every account type, so a credit-card expense and a
+    // checking expense normalize identically. That used to be asserted once
+    // per account type; the function no longer takes a type at all, so the
+    // cases below cover the three behaviours that actually differ.
+    it("flips an expense positive → negative", () => {
+      expect(normalizeAmount(1250)).toBe(-1250);
     });
-    it("flips sign for checking income (negative → positive)", () => {
-      expect(normalizeAmount(-5000, "checking")).toBe(5000);
+    it("flips income negative → positive", () => {
+      expect(normalizeAmount(-5000)).toBe(5000);
     });
-    it("flips sign for credit card expense (positive → negative)", () => {
-      expect(normalizeAmount(5000, "credit")).toBe(-5000);
-    });
-    it("flips sign for credit card payment (negative → positive)", () => {
-      expect(normalizeAmount(-20000, "credit")).toBe(20000);
-    });
-    it("flips sign for investment accounts", () => {
-      expect(normalizeAmount(100000, "investment")).toBe(-100000);
-    });
-    it("flips sign for depository accounts", () => {
-      expect(normalizeAmount(1250, "depository")).toBe(-1250);
-    });
-    it("returns 0 (not -0) for zero amount on checking", () => {
-      expect(Object.is(normalizeAmount(0, "checking"), -0)).toBe(false);
-      expect(normalizeAmount(0, "checking")).toBe(0);
-    });
-    it("returns 0 (not -0) for zero amount on credit", () => {
-      expect(Object.is(normalizeAmount(0, "credit"), -0)).toBe(false);
-    });
-    it("flips sign for other account types", () => {
-      expect(normalizeAmount(1250, "other")).toBe(-1250);
-    });
-    it("flips sign for savings", () => {
-      expect(normalizeAmount(1250, "savings")).toBe(-1250);
-    });
-    it("flips sign for loan", () => {
-      expect(normalizeAmount(-5000, "loan")).toBe(5000);
+    it("returns 0, not -0, for a zero amount", () => {
+      // -0 breaks equality comparisons downstream; see the -0 gotcha in
+      // AGENTS.md.
+      expect(normalizeAmount(0)).toBe(0);
+      expect(Object.is(normalizeAmount(0), -0)).toBe(false);
     });
   });
 
@@ -105,6 +130,24 @@ describe("money utilities", () => {
     });
     it("returns 0 for zero (not null)", () => {
       expect(plaidAmountToCents(0)).toBe(0);
+    });
+  });
+
+  describe("simplefinAmountToCents", () => {
+    it("converts a positive decimal string to integer cents", () => {
+      expect(simplefinAmountToCents("100.23")).toBe(10023);
+    });
+    it("converts a negative decimal string to integer cents", () => {
+      expect(simplefinAmountToCents("-33293.43")).toBe(-3329343);
+    });
+    it("returns 0 for a zero string", () => {
+      expect(simplefinAmountToCents("0")).toBe(0);
+    });
+    it("returns null for a malformed string", () => {
+      expect(simplefinAmountToCents("not-a-number")).toBeNull();
+    });
+    it("returns null for an empty string", () => {
+      expect(simplefinAmountToCents("")).toBeNull();
     });
   });
 });
@@ -167,21 +210,56 @@ describe("money property-based tests", () => {
   );
 
   test.prop([fc.integer({ min: -9999999, max: 9999999 })])(
-    "normalizeAmount flips sign for all account types",
+    "normalizeAmount flips sign for any amount",
     (amount) => {
-      for (const type of ["checking", "savings", "credit", "loan", "investment", "other"]) {
-        expect(normalizeAmount(amount, type)).toBe(amount === 0 ? 0 : -amount);
-      }
+      expect(normalizeAmount(amount)).toBe(amount === 0 ? 0 : -amount);
     }
   );
   test.prop([fc.integer({ min: -9999999, max: 9999999 })])(
-    "normalizeAmount sign symmetry for all account types",
+    "normalizeAmount is sign-symmetric",
     (amount) => {
-      for (const type of ["checking", "credit", "loan"]) {
-        const left = normalizeAmount(amount, type);
-        const right = -normalizeAmount(-amount, type);
-        expect(left).toBe(amount === 0 ? 0 : right);
-      }
+      const left = normalizeAmount(amount);
+      const right = -normalizeAmount(-amount);
+      expect(left).toBe(amount === 0 ? 0 : right);
     }
   );
+
+  describe("plaidBalanceToCents", () => {
+    it("flips Plaid's positive-when-owed balance for liability accounts", () => {
+      // Plaid: "For credit and loan accounts, a positive balance indicates
+      // amount owed." Ledgr stores owed as negative.
+      expect(plaidBalanceToCents(1048.93, "credit")).toBe(-104893);
+      expect(plaidBalanceToCents(8200, "loan")).toBe(-820000);
+    });
+
+    it("leaves asset balances untouched", () => {
+      expect(plaidBalanceToCents(1195.2, "checking")).toBe(119520);
+      expect(plaidBalanceToCents(12500, "savings")).toBe(1250000);
+      expect(plaidBalanceToCents(37351.62, "investment")).toBe(3735162);
+    });
+
+    it("keeps a lender-owes-you credit balance positive", () => {
+      // Negative in Plaid means the lender owes the holder, which is an asset.
+      expect(plaidBalanceToCents(-50, "credit")).toBe(5000);
+    });
+
+    it("never returns -0 for a zero liability balance", () => {
+      expect(Object.is(plaidBalanceToCents(0, "credit"), 0)).toBe(true);
+    });
+
+    it("passes null through", () => {
+      expect(plaidBalanceToCents(null, "credit")).toBeNull();
+      expect(plaidBalanceToCents(undefined, "checking")).toBeNull();
+    });
+
+    test.prop([fc.integer({ min: -9999999, max: 9999999 })])(
+      "net worth is the plain sum of normalized balances",
+      (cents) => {
+        const dollars = cents / 100;
+        const asset = plaidBalanceToCents(dollars, "checking")!;
+        const liability = plaidBalanceToCents(dollars, "credit")!;
+        expect(asset + liability).toBe(0);
+      }
+    );
+  });
 });

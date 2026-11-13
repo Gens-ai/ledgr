@@ -28,3 +28,16 @@ export async function snapshotBalances(dbInstance: LedgrDb = defaultDb): Promise
       .onConflictDoNothing({ target: [balanceHistory.accountId, balanceHistory.date] });
   }
 }
+
+/**
+ * Every distinct balance_history date across all households, ascending. The
+ * caller needs the whole series, not just the newest date, to tell a covered
+ * history apart from one with holes in it.
+ */
+export async function getSnapshotDates(dbInstance: LedgrDb = defaultDb): Promise<string[]> {
+  const rows = await dbInstance
+    .selectDistinct({ date: balanceHistory.date })
+    .from(balanceHistory)
+    .orderBy(balanceHistory.date);
+  return rows.map((r) => r.date);
+}

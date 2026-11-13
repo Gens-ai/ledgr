@@ -1,7 +1,9 @@
 import { getHouseholdId } from "@/lib/auth/session";
+import { withHousehold } from "@/lib/household-context";
 import {
   getTransactions,
   getTransactionSummary,
+  getSuggestedTransfers,
 } from "@/queries/transactions";
 import { getCategories } from "@/queries/categories";
 import { getAccounts } from "@/queries/accounts";
@@ -11,6 +13,8 @@ import { FilterSummaryBar } from "@/components/molecules/filter-summary-bar";
 import { ReviewEntryButton } from "@/components/molecules/review-entry-button";
 import { TransactionList } from "@/components/organisms/transaction-list";
 import { TransactionEmptyState } from "@/components/molecules/transaction-empty-state";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { EyeOff } from "lucide-react";
 
 export default async function TransactionsPage({
   searchParams,
@@ -22,15 +26,19 @@ export default async function TransactionsPage({
   const { filters } = parseTransactionFilters(params);
 
   const hasAnyFilters = Object.entries(filters)
-    .filter(([k]) => k !== "reviewed")
+    .filter(([k]) => k !== "reviewed" && k !== "hidden")
     .some(([, v]) => v !== undefined);
 
-  const [page, allCategories, allAccounts, summary, unreviewedSummary] = await Promise.all([
-    getTransactions(householdId, filters),
+  const [page, allCategories, allAccounts, summary, unreviewedSummary, suggestedTransfers] = await Promise.all([
+    withHousehold(householdId, (tx) => getTransactions(householdId, filters, undefined, undefined, tx)),
     getCategories(householdId),
     getAccounts(householdId),
-    hasAnyFilters ? getTransactionSummary(householdId, filters) : Promise.resolve(null),
-    getTransactionSummary(householdId, { reviewed: false }),
+    // Always summarised, not only when a filter is applied. The unfiltered view
+    // is the one people land on, and it was the only view of the ledger with no
+    // arithmetic on it at all — per-day subtotals, and nothing for the whole.
+    withHousehold(householdId, (tx) => getTransactionSummary(householdId, filters, tx)),
+    withHousehold(householdId, (tx) => getTransactionSummary(householdId, { reviewed: false }, tx)),
+    withHousehold(householdId, (tx) => getSuggestedTransfers(householdId, tx)),
   ]);
   const accountOptions = allAccounts.map((a) => ({ id: a.id, name: a.name }));
 
@@ -41,8 +49,21 @@ export default async function TransactionsPage({
         <ReviewEntryButton unreviewedCount={unreviewedSummary.count} />
       </div>
 
-      <FilterBar accounts={accountOptions} categories={allCategories} />
+      <FilterBar
+        accounts={accountOptions}
+        categories={allCategories}
+        resultCount={summary?.count ?? 0}
+      />
 
+      {filters.hidden && (
+        <Alert>
+          <EyeOff />
+          <AlertTitle>Hidden transactions</AlertTitle>
+          <AlertDescription>
+            These transactions are excluded from the regular ledger. Use Unhide to restore one.
+          </AlertDescription>
+        </Alert>
+      )}
       {summary && (
         <FilterSummaryBar
           count={summary.count}
@@ -52,7 +73,7 @@ export default async function TransactionsPage({
         />
       )}
 
-      {page.rows.length === 0 ? (
+      {page.rows.length === 0 && suggestedTransfers.length === 0 ? (
         <TransactionEmptyState hasFilters={hasAnyFilters} />
       ) : (
         <TransactionList
@@ -61,6 +82,7 @@ export default async function TransactionsPage({
           nextCursor={page.nextCursor}
           categories={allCategories}
           filters={filters}
+          suggestedTransfers={suggestedTransfers}
         />
       )}
     </div>

@@ -4,7 +4,7 @@ import { getDealsSettings } from "@/queries/savings";
 import { McpSettingsForm } from "@/components/organisms/mcp-settings-form";
 import { SavingsSettingsForm } from "@/components/organisms/savings-settings-form";
 import { DemoModeToggle } from "@/components/molecules/demo-mode-toggle";
-import { CategoriesSettingsLink } from "@/components/molecules/categories-settings-link";
+import { AppearanceToggle } from "@/components/molecules/appearance-toggle";
 import { PasskeysManager } from "@/components/organisms/passkeys-manager";
 import { DangerZone } from "@/components/organisms/danger-zone";
 import { isDemoMode } from "@/lib/demo-mode";
@@ -28,7 +28,8 @@ export default async function SettingsPage() {
           Configure integrations and access controls.
         </p>
       </div>
-      <CategoriesSettingsLink />
+      <AppearanceToggle />
+      <DemoModeToggle initialEnabled={demoEnabled} />
       <PasskeysManager />
       <McpSettingsForm
         mcpEnabled={mcpSettings.mcpEnabled}
@@ -40,7 +41,6 @@ export default async function SettingsPage() {
         aiConfigured={isAiConfigured()}
         hasWebSearchProvider={hasWebSearchProvider()}
       />
-      <DemoModeToggle initialEnabled={demoEnabled} />
       <DangerZone />
     </div>
   );

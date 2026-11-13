@@ -1,10 +1,10 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { getSavingsSuggestions } from "@/lib/ai/savings/advisor";
 import { buildSpendingProfile } from "@/lib/ai/savings/profile";
 import { SAVINGS_SCOPE_TYPES, DEFAULT_WINDOW_DAYS } from "@/lib/ai/savings/types";
 import { READ_ANNOTATIONS } from "../constants";
-import { jsonResult } from "../tool-result";
+import { JSON_RESULT_SCHEMA, jsonResult } from "../tool-result";
 
 const scopeShape = {
   scopeType: z
@@ -29,11 +29,12 @@ export function registerSavingsReadTools(server: McpServer, householdId: string,
         "household's overall spending — grounded in real transaction history, not generic advice. Runs only " +
         "when called (never automatically). Pass includeDeals=true to also have the household's configured AI " +
         "provider search the web for current deals, if the household has opted in under Settings.",
-      inputSchema: {
+      inputSchema: z.object({
         ...scopeShape,
         windowDays: z.number().int().min(7).max(365).optional().describe(`Lookback window in days (default ${DEFAULT_WINDOW_DAYS})`),
         includeDeals: z.boolean().optional().describe("Also search the web for current deals (requires the household's deals opt-in)"),
-      },
+      }),
+      outputSchema: JSON_RESULT_SCHEMA,
       annotations: READ_ANNOTATIONS,
     },
     async ({ scopeType, scopeId, windowDays, includeDeals }) => {
@@ -56,10 +57,11 @@ export function registerSavingsReadTools(server: McpServer, householdId: string,
         "recurring charges) behind a scope's spending, without AI suggestions. Intended for a client that wants " +
         "to do its own reasoning or web search over this data — e.g. finding current deals for the merchants " +
         "listed near a location the user provides.",
-      inputSchema: {
+      inputSchema: z.object({
         ...scopeShape,
         windowDays: z.number().int().min(7).max(365).optional().describe(`Lookback window in days (default ${DEFAULT_WINDOW_DAYS})`),
-      },
+      }),
+      outputSchema: JSON_RESULT_SCHEMA,
       annotations: READ_ANNOTATIONS,
     },
     async ({ scopeType, scopeId, windowDays }) => {

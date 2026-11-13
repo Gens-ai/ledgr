@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, lte, lt, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, lt, type SQL, sql } from "drizzle-orm";
 import { db as defaultDb, type LedgrDb } from "@/db";
 import {
   transactions,
@@ -10,8 +10,9 @@ import {
   recurringTransactions,
 } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
-import { notDeleted, sumAbs, countRows } from "@/lib/query-helpers";
-import { notIncome } from "@/queries/shared-conditions";
+import { notDeleted, notHidden, sumAbs, countRows } from "@/lib/query-helpers";
+import { includedInSpending, notIncome } from "@/queries/shared-conditions";
+import { withHousehold } from "@/lib/household-context";
 import { resolvedCategoryLabel } from "@/lib/labels";
 import { todayDateString, getCurrentMonth, monthBounds } from "@/lib/date-utils";
 import {
@@ -115,10 +116,12 @@ export async function resolveScope(
 async function expenseConditions(householdId: string, from: string, to: string, db: LedgrDb): Promise<SQL[]> {
   return [
     notDeleted(transactions),
+    notHidden(transactions),
     lt(transactions.normalizedAmount, 0),
     eq(transactions.pending, false),
-    eq(transactions.isTransfer, false),
-    isNull(transactions.transferPairId),
+    // Upstream's single definition of spending: ordinary rows plus outgoing
+    // transfers in categories that opted in (includeTransferInSpending).
+    await includedInSpending(householdId, db),
     gte(transactions.date, from),
     lte(transactions.date, to),
     await notIncome(householdId, db),
@@ -366,6 +369,18 @@ export async function buildSpendingProfile(
   scope: SavingsScope,
   db: LedgrDb = defaultDb,
   windowDays: number = DEFAULT_WINDOW_DAYS,
+): Promise<SpendingProfile | { error: string }> {
+  // `transactions` has row-level security: under the restricted app role
+  // (APP_DATABASE_URL, set by docker-compose) a read outside withHousehold
+  // sees no rows at all, so the profile would silently come back empty.
+  return withHousehold(householdId, (tx) => doBuildSpendingProfile(householdId, scope, tx, windowDays), db);
+}
+
+async function doBuildSpendingProfile(
+  householdId: string,
+  scope: SavingsScope,
+  db: LedgrDb,
+  windowDays: number,
 ): Promise<SpendingProfile | { error: string }> {
   const resolved = await resolveScope(householdId, scope, db);
   if ("error" in resolved) return resolved;

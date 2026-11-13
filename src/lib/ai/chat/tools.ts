@@ -1,6 +1,5 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { db } from "@/db";
 import {
   transactions,
   accounts,
@@ -17,6 +16,8 @@ import { categoryLabel, resolvedCategoryLabel } from "@/lib/labels";
 import { centsToDisplay } from "@/lib/money";
 import { getSavingsSuggestions } from "@/lib/ai/savings/advisor";
 import { SAVINGS_SCOPE_TYPES } from "@/lib/ai/savings/types";
+import { withHousehold } from "@/lib/household-context";
+import { getCashFlow } from "@/queries/dashboard";
 
 export function financialTools(householdId: string, userId: string) {
   const scoped = scopedQuery(householdId);
@@ -29,23 +30,25 @@ export function financialTools(householdId: string, userId: string) {
         endDate: z.string().describe("End date (YYYY-MM-DD)"),
       }),
       execute: async ({ startDate, endDate }) => {
-        const rows = await db
-          .select({
-            categoryName: categories.name,
-            groupName: categoryGroups.name,
-            amount: transactions.amount,
-          })
-          .from(transactions)
-          .leftJoin(categories, eq(transactions.categoryId, categories.id))
-          .leftJoin(categoryGroups, eq(categories.groupId, categoryGroups.id))
-          .where(
-            and(
-              scoped.where(transactions),
-              gte(transactions.date, startDate),
-              lte(transactions.date, endDate),
-              notDeleted(transactions)
-            )
-          );
+        const rows = await withHousehold(householdId, (tx) =>
+          tx
+            .select({
+              categoryName: categories.name,
+              groupName: categoryGroups.name,
+              amount: transactions.amount,
+            })
+            .from(transactions)
+            .leftJoin(categories, eq(transactions.categoryId, categories.id))
+            .leftJoin(categoryGroups, eq(categories.groupId, categoryGroups.id))
+            .where(
+              and(
+                scoped.where(transactions),
+                gte(transactions.date, startDate),
+                lte(transactions.date, endDate),
+                notDeleted(transactions)
+              )
+            ),
+        );
 
         const byCategory = new Map<string, number>();
         for (const row of rows) {
@@ -88,18 +91,20 @@ export function financialTools(householdId: string, userId: string) {
         if (startDate) conditions.push(gte(transactions.date, startDate));
         if (endDate) conditions.push(lte(transactions.date, endDate));
 
-        const rows = await db
-          .select({
-            date: transactions.date,
-            name: transactions.name,
-            amount: transactions.amount,
-            categoryName: categories.name,
-          })
-          .from(transactions)
-          .leftJoin(categories, eq(transactions.categoryId, categories.id))
-          .where(and(...conditions))
-          .orderBy(desc(transactions.date))
-          .limit(20);
+        const rows = await withHousehold(householdId, (tx) =>
+          tx
+            .select({
+              date: transactions.date,
+              name: transactions.name,
+              amount: transactions.amount,
+              categoryName: categories.name,
+            })
+            .from(transactions)
+            .leftJoin(categories, eq(transactions.categoryId, categories.id))
+            .where(and(...conditions))
+            .orderBy(desc(transactions.date))
+            .limit(20),
+        );
 
         return rows.map((r) => ({
           date: r.date,
@@ -115,14 +120,16 @@ export function financialTools(householdId: string, userId: string) {
       description: "Get current balances for all accounts",
       inputSchema: z.object({}),
       execute: async () => {
-        const rows = await db
-          .select({
-            name: accounts.name,
-            type: accounts.type,
-            currentBalance: accounts.currentBalance,
-          })
-          .from(accounts)
-          .where(and(scoped.where(accounts), notDeleted(accounts)));
+        const rows = await withHousehold(householdId, (tx) =>
+          tx
+            .select({
+              name: accounts.name,
+              type: accounts.type,
+              currentBalance: accounts.currentBalance,
+            })
+            .from(accounts)
+            .where(and(scoped.where(accounts), notDeleted(accounts))),
+        );
 
         return rows.map((r) => ({
           name: r.name,
@@ -144,42 +151,24 @@ export function financialTools(householdId: string, userId: string) {
       }),
       execute: async ({ months }) => {
         const now = new Date();
-        const results: { month: string; spending: string; income: string }[] =
-          [];
+        // Same income/expense rule as the dashboard and Reports (getCashFlow ->
+        // incomeTotalsRule): refunds and transfers are not income.
+        const cashFlow = await withHousehold(householdId, (tx) =>
+          getCashFlow(householdId, months, tx),
+        );
+        const byMonth = new Map(cashFlow.map((r) => [r.month, r]));
 
+        const results: { month: string; spending: string; income: string }[] = [];
         for (let i = 0; i < months; i++) {
           const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-          const start = d.toISOString().split("T")[0];
-          const end = new Date(d.getFullYear(), d.getMonth() + 1, 0)
-            .toISOString()
-            .split("T")[0];
-
-          const rows = await db
-            .select({ amount: transactions.amount })
-            .from(transactions)
-            .where(
-              and(
-                scoped.where(transactions),
-                gte(transactions.date, start),
-                lte(transactions.date, end),
-                notDeleted(transactions)
-              )
-            );
-
-          let spending = 0;
-          let income = 0;
-          for (const r of rows) {
-            if (r.amount > 0) spending += r.amount;
-            else income += Math.abs(r.amount);
-          }
-
+          const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+          const row = byMonth.get(month);
           results.push({
-            month: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
-            spending: `$${(spending / 100).toFixed(2)}`,
-            income: `$${(income / 100).toFixed(2)}`,
+            month,
+            spending: `$${((row?.expenses ?? 0) / 100).toFixed(2)}`,
+            income: `$${((row?.income ?? 0) / 100).toFixed(2)}`,
           });
         }
-
         return results;
       },
     }),
@@ -200,22 +189,24 @@ export function financialTools(householdId: string, userId: string) {
           .toISOString()
           .split("T")[0];
 
-        const rows = await db
-          .select({
-            name: recurringTransactions.name,
-            amount: recurringTransactions.averageAmount,
-            nextDate: recurringTransactions.nextDate,
-            frequency: recurringTransactions.frequency,
-          })
-          .from(recurringTransactions)
-          .where(
-            and(
-              eq(recurringTransactions.householdId, householdId),
-              eq(recurringTransactions.isActive, true),
-              gte(recurringTransactions.nextDate, today),
-              lte(recurringTransactions.nextDate, endDate)
-            )
-          );
+        const rows = await withHousehold(householdId, (tx) =>
+          tx
+            .select({
+              name: recurringTransactions.name,
+              amount: recurringTransactions.averageAmount,
+              nextDate: recurringTransactions.nextDate,
+              frequency: recurringTransactions.frequency,
+            })
+            .from(recurringTransactions)
+            .where(
+              and(
+                eq(recurringTransactions.householdId, householdId),
+                eq(recurringTransactions.isActive, true),
+                gte(recurringTransactions.nextDate, today),
+                lte(recurringTransactions.nextDate, endDate)
+              )
+            ),
+        );
 
         return rows.map((r) => ({
           description: r.name,
@@ -243,56 +234,58 @@ export function financialTools(householdId: string, userId: string) {
         const startDate = `${targetMonth}-01`;
         const endDate = new Date(year, m, 0).toISOString().split("T")[0];
 
-        const [budget] = await db
-          .select()
-          .from(budgets)
-          .where(
-            and(
-              eq(budgets.householdId, householdId),
-              eq(budgets.month, targetMonth)
-            )
-          )
-          .limit(1);
-
-        if (!budget) return { message: "No budget set for this month" };
-
-        const budgetCats = await db
-          .select()
-          .from(budgetCategories)
-          .where(eq(budgetCategories.budgetId, budget.id));
-
-        const results = [];
-        for (const bc of budgetCats) {
-          const [cat] = await db
-            .select({ name: categories.name })
-            .from(categories)
-            .where(eq(categories.id, bc.categoryId))
-            .limit(1);
-
-          const spentRows = await db
-            .select({ amount: transactions.amount })
-            .from(transactions)
+        return withHousehold(householdId, async (tx) => {
+          const [budget] = await tx
+            .select()
+            .from(budgets)
             .where(
               and(
-                scoped.where(transactions),
-                eq(transactions.categoryId, bc.categoryId),
-                gte(transactions.date, startDate),
-                lte(transactions.date, endDate),
-                notDeleted(transactions)
+                eq(budgets.householdId, householdId),
+                eq(budgets.month, targetMonth)
               )
-            );
-          const spent = spentRows.reduce((sum, r) => sum + (r.amount > 0 ? r.amount : 0), 0);
+            )
+            .limit(1);
 
-          results.push({
-            category: resolvedCategoryLabel(cat?.name),
-            budgeted: `$${(bc.limitAmount / 100).toFixed(2)}`,
-            spent: `$${(spent / 100).toFixed(2)}`,
-            remaining: `$${((bc.limitAmount - spent) / 100).toFixed(2)}`,
-            percentUsed: Math.round((spent / bc.limitAmount) * 100),
-          });
-        }
+          if (!budget) return { message: "No budget set for this month" };
 
-        return results;
+          const budgetCats = await tx
+            .select()
+            .from(budgetCategories)
+            .where(eq(budgetCategories.budgetId, budget.id));
+
+          const results = [];
+          for (const bc of budgetCats) {
+            const [cat] = await tx
+              .select({ name: categories.name })
+              .from(categories)
+              .where(eq(categories.id, bc.categoryId))
+              .limit(1);
+
+            const spentRows = await tx
+              .select({ amount: transactions.amount })
+              .from(transactions)
+              .where(
+                and(
+                  scoped.where(transactions),
+                  eq(transactions.categoryId, bc.categoryId),
+                  gte(transactions.date, startDate),
+                  lte(transactions.date, endDate),
+                  notDeleted(transactions)
+                )
+              );
+            const spent = spentRows.reduce((sum, r) => sum + (r.amount > 0 ? r.amount : 0), 0);
+
+            results.push({
+              category: resolvedCategoryLabel(cat?.name),
+              budgeted: `$${(bc.limitAmount / 100).toFixed(2)}`,
+              spent: `$${(spent / 100).toFixed(2)}`,
+              remaining: `$${((bc.limitAmount - spent) / 100).toFixed(2)}`,
+              percentUsed: Math.round((spent / bc.limitAmount) * 100),
+            });
+          }
+
+          return results;
+        });
       },
     }),
 

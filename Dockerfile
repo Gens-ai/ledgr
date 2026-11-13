@@ -5,7 +5,7 @@ ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
 WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild sharp unrs-resolver
 
 FROM base AS migrate-deps
@@ -29,7 +29,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
 FROM base AS runner
-RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
+# Upgrade first: the node:*-slim tag lags Debian security updates, and the
+# release gate fails on any fixable CRITICAL (perl-base blocked v0.3.3).
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
 # The runtime is pure node (entrypoint runs migrate.mjs then server.js), so npm
 # is dead weight that only widens the attack surface — its bundled dependencies
 # are a recurring source of CVEs in image scans. Drop it from the final image.
@@ -37,6 +40,9 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+# The official MCP registry reads this label to confirm the image belongs to
+# the server it is published under. It must sit in the final stage.
+LABEL io.modelcontextprotocol.server.name="io.github.KenTaniguchi-R/ledgr"
 
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
@@ -50,6 +56,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 COPY --from=builder /app/src/db/migrations ./migrations
 COPY --from=builder /app/scripts/migrate.mjs ./migrations/migrate.mjs
+COPY --from=builder /app/scripts/ensure-app-role.mjs ./migrations/ensure-app-role.mjs
 COPY --from=migrate-deps /deps/node_modules ./migrations/node_modules
 COPY --from=builder --chmod=755 /app/scripts/docker-entrypoint.sh ./docker-entrypoint.sh
 COPY --from=builder --chmod=755 /app/scripts/ensure-secrets.sh ./ensure-secrets.sh

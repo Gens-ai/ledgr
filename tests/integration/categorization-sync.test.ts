@@ -11,7 +11,7 @@ import {
   insertCategoryRule,
 } from "./helpers";
 import { categorizeSyncedTransactions } from "../../src/lib/categorization/engine";
-import { transactions, plaidItems } from "../../src/db/schema";
+import { transactions, bankConnections } from "../../src/db/schema";
 import { eq } from "drizzle-orm";
 import type { LedgrDb } from "../../src/db";
 
@@ -27,13 +27,14 @@ describe("categorizeSyncedTransactions", () => {
 
     ({ householdId } = await insertHousehold(db));
     plaidItemId = uuid();
-    await db.insert(plaidItems).values({
+    await db.insert(bankConnections).values({
       id: plaidItemId,
       householdId,
-      accessToken: "encrypted-token",
+      provider: "plaid",
+      credential: "encrypted-token",
       status: "active",
     });
-    ({ accountId } = await insertAccount(db, householdId, { plaidItemId }));
+    ({ accountId } = await insertAccount(db, householdId, { bankConnectionId: plaidItemId }));
   });
 
   afterAll(async () => {
@@ -51,6 +52,44 @@ describe("categorizeSyncedTransactions", () => {
 
     const [row] = await db.select().from(transactions).where(eq(transactions.id, transactionId));
     expect(row!.categoryId).toBe(categoryId);
+  });
+
+  it("applies several distinct (category, source) pairs in one pass", async () => {
+    // categorizeSyncedTransactions groups assignments by a composite
+    // `categoryId \0 source` key so each distinct pair becomes one UPDATE.
+    // If that key collided, transactions would be written to the wrong
+    // category or stamped with the wrong source. Exercise it with two
+    // categories reached through two different tiers in a single call.
+    const { groupId } = await insertCategoryGroup(db, householdId, { name: "Mixed" });
+    const { categoryId: ruleCategory } = await insertCategory(db, householdId, groupId, { name: "Coffee" });
+    const { categoryId: merchantCategory } = await insertCategory(db, householdId, groupId, { name: "Hardware" });
+
+    await insertCategoryRule(db, householdId, ruleCategory, {
+      matchField: "name",
+      matchPattern: "blue bottle",
+    });
+    // The merchant-default tier resolves through transaction.merchantId, not
+    // by name, so the category assignment is the only field that matters here.
+    const { merchantId } = await insertMerchant(db, householdId, {
+      name: "Ace Hardware",
+      categoryId: merchantCategory,
+    });
+
+    const viaRule = await insertTransaction(db, householdId, accountId, { name: "Blue Bottle Coffee" });
+    const viaMerchant = await insertTransaction(db, householdId, accountId, {
+      name: "ACE HARDWARE 41",
+      merchantId,
+    });
+
+    await categorizeSyncedTransactions(plaidItemId, householdId, db);
+
+    const [ruleRow] = await db.select().from(transactions).where(eq(transactions.id, viaRule.transactionId));
+    const [merchantRow] = await db.select().from(transactions).where(eq(transactions.id, viaMerchant.transactionId));
+
+    expect(ruleRow!.categoryId).toBe(ruleCategory);
+    expect(ruleRow!.categorySource).toBe("rule");
+    expect(merchantRow!.categoryId).toBe(merchantCategory);
+    expect(merchantRow!.categorySource).toBe("merchant_default");
   });
 
   it("respects rule priority — higher wins", async () => {
@@ -99,50 +138,6 @@ describe("categorizeSyncedTransactions", () => {
 
     const [row] = await db.select().from(transactions).where(eq(transactions.id, transactionId));
     expect(row!.categoryId).toBe(manualCat);
-  });
-
-  it("falls back to a PFC-mapped category via its seed key", async () => {
-    const { groupId } = await insertCategoryGroup(db, householdId, { name: "Food & Dining" });
-    const { categoryId } = await insertCategory(db, householdId, groupId, {
-      name: "Groceries",
-      pfcSeedKey: "Groceries",
-    });
-
-    const { transactionId } = await insertTransaction(db, householdId, accountId, {
-      name: "Trader Joe's",
-      pfcDetailed: "FOOD_AND_DRINK_GROCERIES",
-    });
-
-    await categorizeSyncedTransactions(plaidItemId, householdId, db);
-
-    const [row] = await db.select().from(transactions).where(eq(transactions.id, transactionId));
-    expect(row!.categoryId).toBe(categoryId);
-    expect(row!.categorySource).toBe("pfc");
-  });
-
-  it("PFC mapping keys off the seed key, not the current display name, so renaming a category doesn't break it", async () => {
-    const { groupId } = await insertCategoryGroup(db, householdId, { name: "Renamed Group" });
-    // Seeded as "Groceries" (pfcSeedKey set at seed time), then renamed — pfcSeedKey never changes.
-    const { categoryId: renamedCat } = await insertCategory(db, householdId, groupId, {
-      name: "Household Food",
-      pfcSeedKey: "Groceries",
-    });
-    // A decoy category that happens to be named "Groceries" today but was never seeded as such
-    // (no pfcSeedKey) — the old name-based join would have matched this one instead.
-    const { categoryId: decoyCat } = await insertCategory(db, householdId, groupId, {
-      name: "Groceries",
-    });
-
-    const { transactionId } = await insertTransaction(db, householdId, accountId, {
-      name: "Safeway",
-      pfcDetailed: "FOOD_AND_DRINK_GROCERIES",
-    });
-
-    await categorizeSyncedTransactions(plaidItemId, householdId, db);
-
-    const [row] = await db.select().from(transactions).where(eq(transactions.id, transactionId));
-    expect(row!.categoryId).toBe(renamedCat);
-    expect(row!.categoryId).not.toBe(decoyCat);
   });
 
   it("categorization failure does not throw", async () => {

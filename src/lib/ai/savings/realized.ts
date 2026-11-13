@@ -1,10 +1,11 @@
-import { and, eq, gte, inArray, isNull, lt, or, type SQL } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, or, type SQL } from "drizzle-orm";
 import { db as defaultDb, type LedgrDb } from "@/db";
 import { transactions } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
-import { notDeleted, sumAbs } from "@/lib/query-helpers";
-import { notIncome } from "@/queries/shared-conditions";
-import { todayDateString } from "@/lib/date-utils";
+import { notDeleted, notHidden, sumAbs } from "@/lib/query-helpers";
+import { includedInSpending, notIncome } from "@/queries/shared-conditions";
+import { withHousehold } from "@/lib/household-context";
+import { formatLocalDate, todayDateString } from "@/lib/date-utils";
 import { evidenceCeilings } from "./validate";
 import type { SavingsSuggestionRecord } from "@/queries/savings";
 
@@ -54,12 +55,23 @@ export async function computeRealizedSavings(
   record: SavingsSuggestionRecord,
   db: LedgrDb = defaultDb,
 ): Promise<RealizedSavings[] | { error: string }> {
+  // RLS on `transactions` — see buildSpendingProfile in ./profile.
+  return withHousehold(householdId, (tx) => doComputeRealizedSavings(householdId, record, tx), db);
+}
+
+async function doComputeRealizedSavings(
+  householdId: string,
+  record: SavingsSuggestionRecord,
+  db: LedgrDb,
+): Promise<RealizedSavings[] | { error: string }> {
   if (record.status !== "acted" || !record.actedAt) {
     return { error: "This suggestion hasn't been marked acted on yet" };
   }
 
   const scoped = scopedQuery(householdId, db);
-  const actedDate = record.actedAt.toISOString().slice(0, 10);
+  // Local date, like every transaction date and todayDateString() — the UTC
+  // date runs a day ahead on US evenings, which dropped that day's spend.
+  const actedDate = formatLocalDate(record.actedAt);
   const today = todayDateString();
   const daysSinceActed = Math.max(
     1,
@@ -69,10 +81,10 @@ export async function computeRealizedSavings(
   const ceilings = evidenceCeilings(record.profileSnapshot);
   const baseConditions = [
     notDeleted(transactions),
+    notHidden(transactions),
     lt(transactions.normalizedAmount, 0),
     eq(transactions.pending, false),
-    eq(transactions.isTransfer, false),
-    isNull(transactions.transferPairId),
+    await includedInSpending(householdId, db),
     gte(transactions.date, actedDate),
     await notIncome(householdId, db),
   ];

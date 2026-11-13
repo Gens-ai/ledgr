@@ -30,11 +30,16 @@ export const categories = pgTable(
     name: text("name").notNull(),
     icon: text("icon"),
     isIncome: boolean("is_income").default(false),
+    includeTransferInSpending: boolean("include_transfer_in_spending")
+      .default(false)
+      .notNull(),
     isSystem: boolean("is_system").default(false),
     sortOrder: integer("sort_order").default(0),
-    /** Immutable seed identifier used to join Plaid PFC codes (see lib/categorization/pfc-map.ts)
-     * to this category — decoupled from `name` so renaming a category in the UI doesn't break
-     * its automatic PFC categorization. Null for categories never targeted by the PFC map. */
+    /** Fork: immutable seed identifier — the category's original seed name, set
+     * at seed time and never changed by edits. The PFC map
+     * (lib/categorization/pfc-map.ts) and seed lookups join on this instead of
+     * the mutable `name`, so a renamed system category keeps its automatic
+     * categorization. Null for custom categories. */
     pfcSeedKey: text("pfc_seed_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },

@@ -21,7 +21,13 @@ export function resolveEntityLogo(options: ResolveLogoOptions): LogoProps {
     return { type: "image", src: options.logoUrl };
   }
   if (options.logoBase64) {
-    return { type: "image", src: `data:image/png;base64,${options.logoBase64}` };
+    // Plaid logos arrive as bare base64 (always PNG); favicon-sourced logos
+    // (institution or AI-guessed merchant) are cached as a full data URI
+    // since their format varies (png/jpeg depending on the source's favicon).
+    const src = options.logoBase64.startsWith("data:")
+      ? options.logoBase64
+      : `data:image/png;base64,${options.logoBase64}`;
+    return { type: "image", src };
   }
   if (options.pfcPrimary) {
     return { type: "image", src: getCategoryIconUrl(options.pfcPrimary) };

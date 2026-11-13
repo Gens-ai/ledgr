@@ -1,6 +1,6 @@
 {
-  "id": "4a749a40-f112-4582-8100-7272b6a7b301",
-  "prevId": "11ed5619-c1ae-43af-ae46-394643983db4",
+  "id": "f218965a-a42c-4c0c-85e5-974ce4c2003c",
+  "prevId": "b6627215-b232-475b-b34c-028987422125",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -652,19 +652,6 @@
           "notNull": true,
           "default": false
         },
-        "deals_location": {
-          "name": "deals_location",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "deals_web_search_enabled": {
-          "name": "deals_web_search_enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -688,69 +675,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.institution_logos": {
-      "name": "institution_logos",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "plaid_item_id": {
-          "name": "plaid_item_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "logo": {
-          "name": "logo",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "idx_institution_logos_plaid_item": {
-          "name": "idx_institution_logos_plaid_item",
-          "columns": [
-            {
-              "expression": "plaid_item_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "institution_logos_plaid_item_id_plaid_items_id_fk": {
-          "name": "institution_logos_plaid_item_id_plaid_items_id_fk",
-          "tableFrom": "institution_logos",
-          "tableTo": "plaid_items",
-          "columnsFrom": [
-            "plaid_item_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.plaid_items": {
-      "name": "plaid_items",
+    "public.bank_connections": {
+      "name": "bank_connections",
       "schema": "",
       "columns": {
         "id": {
@@ -765,8 +691,14 @@
           "primaryKey": false,
           "notNull": true
         },
-        "access_token": {
-          "name": "access_token",
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential": {
+          "name": "credential",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -830,8 +762,8 @@
         }
       },
       "indexes": {
-        "idx_plaid_items_household": {
-          "name": "idx_plaid_items_household",
+        "idx_bank_connections_household": {
+          "name": "idx_bank_connections_household",
           "columns": [
             {
               "expression": "household_id",
@@ -845,8 +777,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_plaid_items_household_institution": {
-          "name": "idx_plaid_items_household_institution",
+        "idx_bank_connections_household_institution": {
+          "name": "idx_bank_connections_household_institution",
           "columns": [
             {
               "expression": "household_id",
@@ -866,8 +798,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_plaid_items_plaid_item_id": {
-          "name": "idx_plaid_items_plaid_item_id",
+        "idx_bank_connections_plaid_item_id": {
+          "name": "idx_bank_connections_plaid_item_id",
           "columns": [
             {
               "expression": "plaid_item_id",
@@ -883,12 +815,73 @@
         }
       },
       "foreignKeys": {
-        "plaid_items_household_id_households_id_fk": {
-          "name": "plaid_items_household_id_households_id_fk",
-          "tableFrom": "plaid_items",
+        "bank_connections_household_id_households_id_fk": {
+          "name": "bank_connections_household_id_households_id_fk",
+          "tableFrom": "bank_connections",
           "tableTo": "households",
           "columnsFrom": [
             "household_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.institution_logos": {
+      "name": "institution_logos",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logo": {
+          "name": "logo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "idx_institution_logos_connection": {
+          "name": "idx_institution_logos_connection",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "institution_logos_connection_id_bank_connections_id_fk": {
+          "name": "institution_logos_connection_id_bank_connections_id_fk",
+          "tableFrom": "institution_logos",
+          "tableTo": "bank_connections",
+          "columnsFrom": [
+            "connection_id"
           ],
           "columnsTo": [
             "id"
@@ -913,8 +906,8 @@
           "primaryKey": true,
           "notNull": true
         },
-        "plaid_item_id": {
-          "name": "plaid_item_id",
+        "connection_id": {
+          "name": "connection_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -967,11 +960,11 @@
         }
       },
       "indexes": {
-        "idx_sync_log_plaid_item_id": {
-          "name": "idx_sync_log_plaid_item_id",
+        "idx_sync_log_connection_id": {
+          "name": "idx_sync_log_connection_id",
           "columns": [
             {
-              "expression": "plaid_item_id",
+              "expression": "connection_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -984,12 +977,12 @@
         }
       },
       "foreignKeys": {
-        "sync_log_plaid_item_id_plaid_items_id_fk": {
-          "name": "sync_log_plaid_item_id_plaid_items_id_fk",
+        "sync_log_connection_id_bank_connections_id_fk": {
+          "name": "sync_log_connection_id_bank_connections_id_fk",
           "tableFrom": "sync_log",
-          "tableTo": "plaid_items",
+          "tableTo": "bank_connections",
           "columnsFrom": [
-            "plaid_item_id"
+            "connection_id"
           ],
           "columnsTo": [
             "id"
@@ -1020,14 +1013,14 @@
           "primaryKey": false,
           "notNull": true
         },
-        "plaid_item_id": {
-          "name": "plaid_item_id",
+        "bank_connection_id": {
+          "name": "bank_connection_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "plaid_account_id": {
-          "name": "plaid_account_id",
+        "external_account_id": {
+          "name": "external_account_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1132,11 +1125,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_accounts_plaid_item": {
-          "name": "idx_accounts_plaid_item",
+        "idx_accounts_bank_connection": {
+          "name": "idx_accounts_bank_connection",
           "columns": [
             {
-              "expression": "plaid_item_id",
+              "expression": "bank_connection_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1151,7 +1144,7 @@
           "name": "idx_accounts_resurrection",
           "columns": [
             {
-              "expression": "plaid_account_id",
+              "expression": "external_account_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1184,12 +1177,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "accounts_plaid_item_id_plaid_items_id_fk": {
-          "name": "accounts_plaid_item_id_plaid_items_id_fk",
+        "accounts_bank_connection_id_bank_connections_id_fk": {
+          "name": "accounts_bank_connection_id_bank_connections_id_fk",
           "tableFrom": "accounts",
-          "tableTo": "plaid_items",
+          "tableTo": "bank_connections",
           "columnsFrom": [
-            "plaid_item_id"
+            "bank_connection_id"
           ],
           "columnsTo": [
             "id"
@@ -1359,12 +1352,6 @@
           "primaryKey": false,
           "notNull": false,
           "default": 0
-        },
-        "pfc_seed_key": {
-          "name": "pfc_seed_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -1892,12 +1879,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "plaid_transaction_id": {
-          "name": "plaid_transaction_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "pending_transaction_id": {
           "name": "pending_transaction_id",
           "type": "text",
@@ -2024,8 +2005,20 @@
           "primaryKey": false,
           "notNull": false
         },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "ai_categorization_attempted_at": {
           "name": "ai_categorization_attempted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "merchant_resolution_attempted_at": {
+          "name": "merchant_resolution_attempted_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -2128,26 +2121,38 @@
           "method": "btree",
           "with": {}
         },
-        "idx_txn_plaid_id_unique": {
-          "name": "idx_txn_plaid_id_unique",
-          "columns": [
-            {
-              "expression": "plaid_transaction_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "idx_txn_merchant": {
           "name": "idx_txn_merchant",
           "columns": [
             {
               "expression": "merchant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_txn_household_merchant_resolution": {
+          "name": "idx_txn_household_merchant_resolution",
+          "columns": [
+            {
+              "expression": "household_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "merchant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "merchant_resolution_attempted_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2189,7 +2194,8 @@
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
+          "where": "external_id IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -3555,164 +3561,6 @@
       },
       "indexes": {},
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.savings_suggestions": {
-      "name": "savings_suggestions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "household_id": {
-          "name": "household_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope_type": {
-          "name": "scope_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope_id": {
-          "name": "scope_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "scope_label": {
-          "name": "scope_label",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "window_days": {
-          "name": "window_days",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "payload": {
-          "name": "payload",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "model": {
-          "name": "model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "deals_included": {
-          "name": "deals_included",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'new'"
-        },
-        "acted_at": {
-          "name": "acted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "idx_savings_suggestions_household_created": {
-          "name": "idx_savings_suggestions_household_created",
-          "columns": [
-            {
-              "expression": "household_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_savings_suggestions_scope": {
-          "name": "idx_savings_suggestions_scope",
-          "columns": [
-            {
-              "expression": "household_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "scope_type",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "scope_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "savings_suggestions_household_id_households_id_fk": {
-          "name": "savings_suggestions_household_id_households_id_fk",
-          "tableFrom": "savings_suggestions",
-          "tableTo": "households",
-          "columnsFrom": [
-            "household_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

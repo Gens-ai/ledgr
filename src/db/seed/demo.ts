@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db as defaultDb, type LedgrDb } from "@/db";
 import {
   households,
-  plaidItems,
+  bankConnections,
   syncLog,
   accounts,
   balanceHistory,
@@ -19,6 +19,7 @@ import {
 import { seedDefaultCategories } from "@/db/seed/categories";
 import { encrypt } from "@/lib/encryption";
 import { DEMO_HOUSEHOLD_ID } from "@/lib/demo-mode";
+import { withHousehold } from "@/lib/household-context";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,7 +78,7 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
 
   const now = new Date();
 
-  await db.transaction(async (tx) => {
+  await withHousehold(DEMO_HOUSEHOLD_ID, async (tx) => {
     // ------------------------------------------------------------------
     // 1. Household
     // ------------------------------------------------------------------
@@ -90,22 +91,26 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
     await seedDefaultCategories(tx, DEMO_HOUSEHOLD_ID);
 
     // Retrieve seeded categories for later reference
+    // Keyed by seed key (the original seed name), not the editable display name.
     const allCategories = await tx
-      .select({ id: categories.id, name: categories.name })
+      .select({ id: categories.id, pfcSeedKey: categories.pfcSeedKey })
       .from(categories)
       .where(eq(categories.householdId, DEMO_HOUSEHOLD_ID));
 
-    const catByName = new Map(allCategories.map((c) => [c.name, c.id]));
+    const catByName = new Map(
+      allCategories.flatMap((c) => (c.pfcSeedKey ? [[c.pfcSeedKey, c.id] as const] : [])),
+    );
 
     // ------------------------------------------------------------------
     // 3. Plaid Items
     // ------------------------------------------------------------------
-    await tx.insert(plaidItems)
+    await tx.insert(bankConnections)
       .values([
         {
           id: PLAID_ITEM_CHASE,
           householdId: DEMO_HOUSEHOLD_ID,
-          accessToken: encrypt("demo-not-a-real-token-chase"),
+          provider: "plaid",
+          credential: encrypt("demo-not-a-real-token-chase"),
           plaidItemId: "demo-item-chase-0001",
           plaidInstitutionId: "ins_3",
           institutionName: "Chase",
@@ -118,7 +123,8 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         {
           id: PLAID_ITEM_VANGUARD,
           householdId: DEMO_HOUSEHOLD_ID,
-          accessToken: encrypt("demo-not-a-real-token-vanguard"),
+          provider: "plaid",
+          credential: encrypt("demo-not-a-real-token-vanguard"),
           plaidItemId: "demo-item-vanguard-0001",
           plaidInstitutionId: "ins_115617",
           institutionName: "Vanguard",
@@ -137,7 +143,7 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
       .values([
         {
           id: uuid(),
-          plaidItemId: PLAID_ITEM_CHASE,
+          connectionId: PLAID_ITEM_CHASE,
           syncedAt: new Date(toDateStr(daysAgo(1)) + "T08:00:00.000Z"),
           cursorBefore: "demo-cursor-chase-000",
           cursorAfter: "demo-cursor-chase-001",
@@ -147,7 +153,7 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         },
         {
           id: uuid(),
-          plaidItemId: PLAID_ITEM_CHASE,
+          connectionId: PLAID_ITEM_CHASE,
           syncedAt: new Date(toDateStr(daysAgo(3)) + "T08:00:00.000Z"),
           cursorBefore: null,
           cursorAfter: "demo-cursor-chase-000",
@@ -157,7 +163,7 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         },
         {
           id: uuid(),
-          plaidItemId: PLAID_ITEM_VANGUARD,
+          connectionId: PLAID_ITEM_VANGUARD,
           syncedAt: new Date(toDateStr(daysAgo(1)) + "T09:00:00.000Z"),
           cursorBefore: "demo-cursor-vanguard-000",
           cursorAfter: "demo-cursor-vanguard-001",
@@ -167,7 +173,7 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         },
         {
           id: uuid(),
-          plaidItemId: PLAID_ITEM_VANGUARD,
+          connectionId: PLAID_ITEM_VANGUARD,
           syncedAt: new Date(toDateStr(daysAgo(5)) + "T09:00:00.000Z"),
           cursorBefore: null,
           cursorAfter: "demo-cursor-vanguard-000",
@@ -185,8 +191,8 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         {
           id: ACCOUNT_CHECKING,
           householdId: DEMO_HOUSEHOLD_ID,
-          plaidItemId: PLAID_ITEM_CHASE,
-          plaidAccountId: "demo-plaid-acct-checking",
+          bankConnectionId: PLAID_ITEM_CHASE,
+          externalAccountId: "demo-plaid-acct-checking",
           name: "Main Checking",
           type: "checking",
           currentBalance: 420000,
@@ -200,8 +206,8 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         {
           id: ACCOUNT_SAVINGS,
           householdId: DEMO_HOUSEHOLD_ID,
-          plaidItemId: PLAID_ITEM_CHASE,
-          plaidAccountId: "demo-plaid-acct-savings",
+          bankConnectionId: PLAID_ITEM_CHASE,
+          externalAccountId: "demo-plaid-acct-savings",
           name: "Emergency Fund",
           type: "savings",
           currentBalance: 1250000,
@@ -215,8 +221,8 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         {
           id: ACCOUNT_CREDIT,
           householdId: DEMO_HOUSEHOLD_ID,
-          plaidItemId: PLAID_ITEM_CHASE,
-          plaidAccountId: "demo-plaid-acct-credit",
+          bankConnectionId: PLAID_ITEM_CHASE,
+          externalAccountId: "demo-plaid-acct-credit",
           name: "Everyday Card",
           type: "credit",
           currentBalance: -180000,
@@ -230,8 +236,8 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         {
           id: ACCOUNT_INVESTMENT,
           householdId: DEMO_HOUSEHOLD_ID,
-          plaidItemId: PLAID_ITEM_VANGUARD,
-          plaidAccountId: "demo-plaid-acct-investment",
+          bankConnectionId: PLAID_ITEM_VANGUARD,
+          externalAccountId: "demo-plaid-acct-investment",
           name: "Brokerage",
           type: "investment",
           currentBalance: 4500000,
@@ -244,7 +250,7 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         {
           id: ACCOUNT_CAR_LOAN,
           householdId: DEMO_HOUSEHOLD_ID,
-          plaidItemId: null,
+          bankConnectionId: null,
           name: "Car Loan",
           type: "loan",
           currentBalance: -820000,
@@ -394,7 +400,7 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
           currency: "USD",
           pending: false,
           reviewed: true,
-          categorySource: CATEGORY_SOURCES[txnIndex % 5],
+          categorySource: CATEGORY_SOURCES[txnIndex % CATEGORY_SOURCES.length],
           createdAt: now,
           updatedAt: now,
         });
@@ -409,9 +415,12 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
 
       for (let ti = 0; ti < txnTemplates.length; ti++) {
         const tmpl = txnTemplates[ti];
-        // Deterministic: use modulo arithmetic to decide if transaction happens this day
+        // Deterministic: use modulo arithmetic to decide if transaction happens this day.
+        // hash advances by 1 each day (31 % 30), so it visits every value in [0, 30)
+        // exactly once per 30-day window — firing when hash < frequency yields
+        // `frequency` occurrences per month.
         const hash = (dayOffset * 31 + ti * 7) % 30;
-        const threshold = Math.round(30 / tmpl.frequency);
+        const threshold = tmpl.frequency;
         if (hash >= threshold) continue;
 
         const amtVariation = sineVariation(txnIndex, 13, Math.round(tmpl.amountBase * 0.3));
@@ -433,7 +442,7 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
           currency: "USD",
           pending: false,
           reviewed: txnIndex % 4 !== 0,
-          categorySource: CATEGORY_SOURCES[txnIndex % 5],
+          categorySource: CATEGORY_SOURCES[txnIndex % CATEGORY_SOURCES.length],
           createdAt: now,
           updatedAt: now,
         });
@@ -496,12 +505,27 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
         updatedAt: now,
       });
 
+    // Limits track the generated spend (see txnTemplates / monthlyFixed) so the
+    // budget covers roughly all of it rather than leaving most of the month in
+    // "Everything Else". Groceries is deliberately set below trend so the
+    // over-budget state is represented too.
     const budgetCategoryLimits: { category: string; limit: number }[] = [
-      { category: "Groceries", limit: 60000 },
-      { category: "Restaurants", limit: 25000 },
-      { category: "Subscriptions", limit: 10000 },
-      { category: "Gas", limit: 20000 },
-      { category: "Coffee Shops", limit: 8000 },
+      { category: "Rent/Mortgage", limit: 225000 },
+      { category: "Car Payment", limit: 45000 },
+      { category: "Groceries", limit: 58000 },
+      { category: "Home Goods", limit: 24000 },
+      { category: "Gas", limit: 18000 },
+      { category: "Electronics", limit: 15000 },
+      { category: "Electric", limit: 13000 },
+      { category: "Public Transit", limit: 10000 },
+      { category: "Internet", limit: 9500 },
+      { category: "Phone", limit: 9000 },
+      { category: "Clothing", limit: 9000 },
+      { category: "Restaurants", limit: 7000 },
+      { category: "Coffee Shops", limit: 6000 },
+      { category: "Pharmacy", limit: 3000 },
+      { category: "Subscriptions", limit: 3000 },
+      { category: "Fitness", limit: 2500 },
     ];
 
     await tx.insert(budgetCategories)
@@ -716,5 +740,5 @@ export async function seedDemoHousehold(db: LedgrDb = defaultDb): Promise<void> 
     for (let i = 0; i < holdingsHistoryRows.length; i += BATCH_SIZE) {
       await tx.insert(holdingsHistory).values(holdingsHistoryRows.slice(i, i + BATCH_SIZE));
     }
-  });
+  }, db);
 }

@@ -14,6 +14,8 @@ import {
 } from "./helpers";
 import { buildSpendingProfile, resolveScope } from "../../src/lib/ai/savings/profile";
 import { getCurrentMonth } from "../../src/lib/date-utils";
+import { transactions } from "../../src/db/schema";
+import { sql } from "drizzle-orm";
 
 function daysAgo(n: number): string {
   const d = new Date();
@@ -300,5 +302,62 @@ describe("buildSpendingProfile", () => {
     const { householdId } = await insertHousehold(db);
     const profile = await buildSpendingProfile(householdId, { type: "merchant", id: "does-not-exist" }, db, 90);
     expect(profile).toHaveProperty("error");
+  });
+});
+
+// `transactions` has row-level security (migration 0007). docker-compose runs
+// the app as a restricted role (APP_DATABASE_URL) that RLS applies to, so a
+// read outside withHousehold() sees no rows. The other tests here connect as
+// the superuser, which bypasses RLS, so they cannot catch that.
+describe("buildSpendingProfile under row-level security", () => {
+  let db: LedgrDb;
+  let close: () => Promise<void>;
+  const role = `rls_probe_${Math.random().toString(36).slice(2, 10)}`;
+
+  beforeAll(async () => {
+    ({ db, close } = await createTestDb());
+    await db.execute(sql.raw(`CREATE ROLE "${role}" NOLOGIN NOSUPERUSER NOBYPASSRLS`));
+    await db.execute(sql.raw(`GRANT USAGE ON SCHEMA public TO "${role}"`));
+    await db.execute(sql.raw(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "${role}"`));
+  });
+
+  afterAll(async () => {
+    await db.execute(sql.raw(`DROP OWNED BY "${role}"`));
+    await db.execute(sql.raw(`DROP ROLE "${role}"`));
+    await close();
+  });
+
+  /** Runs `work` as the restricted role, the way the app connects in Docker. */
+  async function asRestrictedRole<T>(work: (tx: LedgrDb) => Promise<T>): Promise<T> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql.raw(`SET LOCAL ROLE "${role}"`));
+      return work(tx);
+    });
+  }
+
+  it("still sees the household's spending", async () => {
+    const { householdId } = await insertHousehold(db);
+    const { accountId } = await insertAccount(db, householdId);
+    const { groupId } = await insertCategoryGroup(db, householdId);
+    const { categoryId } = await insertCategory(db, householdId, groupId, { name: "Food & Dining" });
+    const { merchantId } = await insertMerchant(db, householdId, { name: "Five Guys", categoryId });
+    await insertTransaction(db, householdId, accountId, {
+      date: daysAgo(5),
+      merchantId,
+      categoryId,
+      amount: 1840,
+      normalizedAmount: -1840,
+    });
+
+    // Control: the harness really enforces RLS — a bare read sees nothing.
+    const bare = await asRestrictedRole((tx) => tx.select().from(transactions));
+    expect(bare).toHaveLength(0);
+
+    const profile = await asRestrictedRole((tx) =>
+      buildSpendingProfile(householdId, { type: "merchant", id: merchantId }, tx, 90),
+    );
+    if ("error" in profile) throw new Error(profile.error);
+    expect(profile.merchants[0]?.visitCount).toBe(1);
+    expect(profile.totalSpendCents).toBe(1840);
   });
 });

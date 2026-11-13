@@ -12,14 +12,28 @@ import {
   Check,
   ChevronDown,
   BadgeCheck,
+  CalendarDays,
+  EyeOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSearchParamFilters } from "@/hooks/use-search-param-filters";
 import { useAmountFilter } from "@/hooks/use-amount-filter";
 import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Command,
   CommandEmpty,
@@ -32,26 +46,32 @@ import {
   DateRangePopover,
   type DatePresetOption,
 } from "@/components/molecules/date-range-popover";
+import {
+  MobileFilterSheet,
+  type FilterSheetSection,
+} from "@/components/molecules/mobile-filter-sheet";
 import { DATE_PRESETS, dateRangeForPreset, matchDatePreset, type DatePresetId } from "@/lib/date-presets";
-import { formatDateShort } from "@/lib/date-utils";
+import {
+  TYPE_LABELS,
+  buildFilterChips,
+  describeAccountFilter,
+  describeAmountFilter,
+  describeCategoryFilter,
+  describeDateFilter,
+  describeTypeFilter,
+  type AccountOption,
+  type FilterChip,
+  type FilterChipKey,
+} from "@/lib/transaction-filter-chips";
 import { UNCATEGORIZED } from "@/lib/labels";
 import type { CategoryGroup } from "@/queries/categories";
-
-interface AccountOption {
-  id: string;
-  name: string;
-}
 
 interface TransactionFiltersProps {
   accounts: AccountOption[];
   categories: CategoryGroup[];
+  /** Rows matching the current filters — shown on the mobile sheet's apply button. */
+  resultCount: number;
 }
-
-const TYPE_LABELS: Record<string, string> = {
-  expense: "Expenses",
-  credits: "Credits",
-  transfer: "Transfers",
-};
 
 // "All time" clears from/to; the rest map to date-presets ranges.
 const DATE_OPTIONS: DatePresetOption[] = [
@@ -72,7 +92,11 @@ function triggerLabel(label: string, value: string | null, active: boolean): Rea
   );
 }
 
-export function TransactionFilters({ accounts, categories }: TransactionFiltersProps) {
+/** A radio group needs a value for every row; `null` is not one, so the
+ *  "no type filter" row carries this sentinel and maps back to null. */
+const ALL_TYPES = "__all__";
+
+export function TransactionFilters({ accounts, categories, resultCount }: TransactionFiltersProps) {
   const { updateFilter, updateFilters, clearFilters, hasFilters, searchParams } =
     useSearchParamFilters();
 
@@ -110,44 +134,22 @@ export function TransactionFilters({ accounts, categories }: TransactionFiltersP
   const dateMatch = matchDatePreset(fromParam, toParam);
   const dateActive = dateMatch !== null;
   const dateSelectedId = dateActive ? (dateMatch === "custom" ? null : dateMatch) : "all";
-  const dateValue = (() => {
-    if (dateMatch === null) return null;
-    if (dateMatch !== "custom") return DATE_PRESETS.find((p) => p.id === dateMatch)?.label ?? null;
-    if (fromParam && toParam) return `${formatDateShort(fromParam)} - ${formatDateShort(toParam)}`;
-    if (fromParam) return `From ${formatDateShort(fromParam)}`;
-    if (toParam) return `Until ${formatDateShort(toParam)}`;
-    return null;
-  })();
+  const dateValue = describeDateFilter(fromParam, toParam);
 
   const accountId = searchParams.get("account");
-  const accountValue = accountId
-    ? accounts.find((a) => a.id === accountId)?.name ?? null
-    : null;
+  const accountValue = describeAccountFilter(accountId, accounts);
 
   const categoryId = searchParams.get("category");
-  const categoryValue = (() => {
-    if (!categoryId) return null;
-    if (categoryId === "uncategorized") return UNCATEGORIZED;
-    for (const group of categories) {
-      const cat = group.categories.find((c) => c.id === categoryId);
-      if (cat) return cat.name;
-    }
-    return null;
-  })();
+  const categoryValue = describeCategoryFilter(categoryId, categories);
 
   const typeId = searchParams.get("type");
-  const typeValue = typeId ? TYPE_LABELS[typeId] ?? null : null;
+  const typeValue = describeTypeFilter(typeId);
 
   const amountActive = !!(searchParams.get("amountMin") || searchParams.get("amountMax"));
-  const amountValue = (() => {
-    const { minDisplay: min, maxDisplay: max } = amount;
-    if (min && max) return `$${min} - $${max}`;
-    if (min) return `≥ $${min}`;
-    if (max) return `≤ $${max}`;
-    return null;
-  })();
+  const amountValue = describeAmountFilter(amount.minDisplay, amount.maxDisplay);
 
   const reviewedActive = searchParams.get("reviewed") === "true";
+  const hiddenActive = searchParams.get("hidden") === "true";
 
   function handleDatePreset(id: string) {
     if (id === "all") updateFilters({ from: null, to: null });
@@ -160,41 +162,189 @@ export function TransactionFilters({ accounts, categories }: TransactionFiltersP
   }
 
   // ---- applied-filter chips ----
-  const chips: { key: string; label: string; onRemove: () => void }[] = [];
-  if (dateActive)
-    chips.push({ key: "date", label: `Date: ${dateValue}`, onRemove: () => updateFilters({ from: null, to: null }) });
-  if (accountValue)
-    chips.push({ key: "account", label: `Account: ${accountValue}`, onRemove: () => updateFilter("account", null) });
-  if (categoryValue)
-    chips.push({ key: "category", label: `Category: ${categoryValue}`, onRemove: () => updateFilter("category", null) });
-  if (typeValue)
-    chips.push({ key: "type", label: typeValue, onRemove: () => updateFilter("type", null) });
-  if (amountActive)
-    chips.push({
+  const chips = buildFilterChips({
+    from: fromParam,
+    to: toParam,
+    accountId,
+    categoryId,
+    typeId,
+    amountMinDisplay: amount.minDisplay,
+    amountMaxDisplay: amount.maxDisplay,
+    reviewed: reviewedActive,
+    hidden: hiddenActive,
+    accounts,
+    categories,
+  });
+
+  const removeChip: Record<FilterChipKey, () => void> = {
+    date: () => updateFilters({ from: null, to: null }),
+    account: () => updateFilter("account", null),
+    category: () => updateFilter("category", null),
+    type: () => updateFilter("type", null),
+    amount: () => {
+      amount.reset();
+      updateFilters({ amountMin: null, amountMax: null });
+    },
+    reviewed: () => updateFilter("reviewed", null),
+    hidden: () => updateFilter("hidden", null),
+  };
+
+  function renderChip(chip: FilterChip) {
+    const text = chip.label ? `${chip.label}: ${chip.value}` : chip.value;
+    return (
+      <Badge key={chip.key} variant="secondary" className="shrink-0 gap-1 pr-1 font-normal">
+        {chip.label && <span className="text-muted-foreground">{chip.label}:</span>}
+        {chip.value}
+        <button
+          type="button"
+          aria-label={`Remove ${text} filter`}
+          onClick={removeChip[chip.key]}
+          className="ml-0.5 rounded-full p-0.5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </Badge>
+    );
+  }
+
+  // ---- the same filters, as rows for the mobile sheet ----
+  const amountInputs = (
+    <div className="flex items-center gap-1.5 px-2 pt-2">
+      <Input
+        type="text"
+        inputMode="decimal"
+        placeholder="Min $"
+        aria-label="Minimum amount"
+        value={amount.minDisplay}
+        onChange={(e) => amount.handleMinChange(e.target.value)}
+        onBlur={() => amount.handleBlur("amountMin")}
+        className="h-9 text-sm"
+      />
+      <span className="text-xs text-muted-foreground">to</span>
+      <Input
+        type="text"
+        inputMode="decimal"
+        placeholder="Max $"
+        aria-label="Maximum amount"
+        value={amount.maxDisplay}
+        onChange={(e) => amount.handleMaxChange(e.target.value)}
+        onBlur={() => amount.handleBlur("amountMax")}
+        className="h-9 text-sm"
+      />
+    </div>
+  );
+
+  const sheetSections: FilterSheetSection[] = [
+    {
+      key: "date",
+      label: "Date",
+      icon: CalendarDays,
+      value: dateValue,
+      placeholder: "All time",
+      groups: [{ options: DATE_OPTIONS.map((o) => ({ id: o.id, label: o.label })) }],
+      selectedId: dateSelectedId ?? "",
+      onSelect: handleDatePreset,
+      extra: (
+        <div className="flex items-center gap-1.5 px-2 pt-2">
+          <Input
+            type="date"
+            aria-label="From date"
+            value={fromParam ?? ""}
+            onChange={(e) => updateFilter("from", e.target.value || null)}
+            className="h-9 flex-1 text-sm"
+          />
+          <span className="text-xs text-muted-foreground">to</span>
+          <Input
+            type="date"
+            aria-label="To date"
+            value={toParam ?? ""}
+            onChange={(e) => updateFilter("to", e.target.value || null)}
+            className="h-9 flex-1 text-sm"
+          />
+        </div>
+      ),
+    },
+    {
+      key: "account",
+      label: "Account",
+      icon: Landmark,
+      value: accountValue,
+      placeholder: "All accounts",
+      groups: [
+        {
+          options: [
+            { id: "", label: "All accounts" },
+            ...accounts.map((a) => ({ id: a.id, label: a.name })),
+          ],
+        },
+      ],
+      selectedId: accountId ?? "",
+      onSelect: (id) => updateFilter("account", id || null),
+    },
+    {
+      key: "category",
+      label: "Category",
+      icon: Tags,
+      value: categoryValue,
+      placeholder: "All categories",
+      groups: [
+        {
+          options: [
+            { id: "", label: "All categories" },
+            { id: "uncategorized", label: UNCATEGORIZED, muted: true },
+          ],
+        },
+        ...categories.map((group) => ({
+          heading: group.name,
+          options: group.categories.map((cat) => ({ id: cat.id, label: cat.name })),
+        })),
+      ],
+      selectedId: categoryId ?? "",
+      onSelect: (id) => updateFilter("category", id || null),
+    },
+    {
+      key: "type",
+      label: "Type",
+      icon: ArrowLeftRight,
+      value: typeValue,
+      placeholder: "All types",
+      groups: [
+        {
+          options: [
+            { id: "", label: "All types" },
+            ...Object.entries(TYPE_LABELS).map(([id, label]) => ({ id, label })),
+          ],
+        },
+      ],
+      selectedId: typeId ?? "",
+      onSelect: (id) => updateFilter("type", id || null),
+    },
+    {
       key: "amount",
-      label: `Amount: ${amountValue}`,
-      onRemove: () => {
-        amount.reset();
-        updateFilters({ amountMin: null, amountMax: null });
-      },
-    });
-  if (reviewedActive)
-    chips.push({ key: "reviewed", label: "Reviewed", onRemove: () => updateFilter("reviewed", null) });
+      label: "Amount",
+      icon: DollarSign,
+      value: amountValue,
+      placeholder: "Any",
+      extra: amountInputs,
+    },
+  ];
 
   return (
     <div className="space-y-3">
       {/* Row 1: search + export */}
       <div className="flex items-center gap-2">
-        <div className="relative flex-1 sm:flex-none">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
+        <InputGroup className="h-9 flex-1 sm:flex-none sm:w-[280px]">
+          <InputGroupAddon>
+            <Search />
+          </InputGroupAddon>
+          <InputGroupInput
             placeholder="Search transactions..."
             aria-label="Search transactions"
             value={searchValue}
             onChange={(e) => handleSearchChange(e.target.value)}
-            className="h-9 w-full pl-8 text-sm sm:w-[280px]"
+            className="text-sm"
           />
-        </div>
+        </InputGroup>
 
         <a
           href={`/api/export/transactions?${searchParams.toString()}`}
@@ -207,8 +357,29 @@ export function TransactionFilters({ accounts, categories }: TransactionFiltersP
         </a>
       </div>
 
-      {/* Row 2: filter pills */}
-      <div className="flex flex-wrap items-center gap-2">
+      {/*
+        Row 2, below sm: one Filters button and the applied chips share a single
+        scrolling row. Six wrapping pills plus a chips row cost up to three rows
+        of a 390px screen before the ledger starts; this costs one, applied or
+        not. The negative margin lets chips scroll to the screen edge rather
+        than stopping short at the layout's px-4.
+      */}
+      <div className="-mx-4 flex items-center gap-2 overflow-x-auto px-4 pb-0.5 [scrollbar-width:none] sm:hidden [&::-webkit-scrollbar]:hidden">
+        <MobileFilterSheet
+          sections={sheetSections}
+          activeCount={chips.length}
+          reviewed={reviewedActive}
+          onReviewedChange={(next) => updateFilter("reviewed", next ? "true" : null)}
+          hidden={hiddenActive}
+          onHiddenChange={(next) => updateFilter("hidden", next ? "true" : null)}
+          onClearAll={handleClearAll}
+          resultCount={resultCount}
+        />
+        {chips.map(renderChip)}
+      </div>
+
+      {/* Row 2, sm and up: the filter pills, unchanged */}
+      <div className="hidden flex-wrap items-center gap-2 sm:flex">
         {/* Date */}
         <DateRangePopover
           presets={DATE_OPTIONS}
@@ -309,7 +480,6 @@ export function TransactionFilters({ accounts, categories }: TransactionFiltersP
                           setCategoryOpen(false);
                         }}
                       >
-                        {cat.icon ? `${cat.icon} ` : ""}
                         {cat.name}
                         {categoryId === cat.id && <Check className="ml-auto h-3.5 w-3.5" />}
                       </CommandItem>
@@ -321,39 +491,30 @@ export function TransactionFilters({ accounts, categories }: TransactionFiltersP
           </PopoverContent>
         </Popover>
 
-        {/* Type */}
-        <Popover open={typeOpen} onOpenChange={setTypeOpen}>
-          <PopoverTrigger
+        {/* Type — a single-select list, which is what a menu radio group is for.
+            Built from raw buttons it was Tab-only: five stops, no arrow keys. */}
+        <DropdownMenu open={typeOpen} onOpenChange={setTypeOpen}>
+          <DropdownMenuTrigger
             render={<Button variant={typeValue ? "default" : "outline"} size="sm" className="h-8 text-xs" />}
           >
             <ArrowLeftRight className="mr-1 h-3.5 w-3.5" />
             {triggerLabel("Type", typeValue, !!typeValue)}
             <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
-          </PopoverTrigger>
-          <PopoverContent className="w-[180px] p-1" align="start">
-            <div className="flex flex-col">
-              <button
-                type="button"
-                onClick={() => selectType(null)}
-                className="flex h-8 items-center justify-between rounded-md px-2 text-sm hover:bg-muted"
-              >
-                All types
-                {!typeId && <Check className="h-3.5 w-3.5" />}
-              </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="w-[180px]" align="start">
+            <DropdownMenuRadioGroup
+              value={typeId ?? ALL_TYPES}
+              onValueChange={(value) => selectType(value === ALL_TYPES ? null : String(value))}
+            >
+              <DropdownMenuRadioItem value={ALL_TYPES}>All types</DropdownMenuRadioItem>
               {Object.entries(TYPE_LABELS).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => selectType(value)}
-                  className="flex h-8 items-center justify-between rounded-md px-2 text-sm hover:bg-muted"
-                >
+                <DropdownMenuRadioItem key={value} value={value}>
                   {label}
-                  {typeId === value && <Check className="h-3.5 w-3.5" />}
-                </button>
+                </DropdownMenuRadioItem>
               ))}
-            </div>
-          </PopoverContent>
-        </Popover>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         {/* Amount */}
         <Popover open={amountOpen} onOpenChange={setAmountOpen}>
@@ -403,24 +564,25 @@ export function TransactionFilters({ accounts, categories }: TransactionFiltersP
         >
           <BadgeCheck className="mr-1 h-3.5 w-3.5" /> Reviewed
         </Button>
+
+        {/* Hidden toggle — shows only hidden transactions; they're excluded by
+            default everywhere else. */}
+        <Button
+          type="button"
+          variant={hiddenActive ? "default" : "outline"}
+          size="sm"
+          className="h-8 text-xs"
+          aria-pressed={hiddenActive}
+          onClick={() => updateFilter("hidden", hiddenActive ? null : "true")}
+        >
+          <EyeOff className="mr-1 h-3.5 w-3.5" /> Hidden
+        </Button>
       </div>
 
-      {/* Row 3: applied-filter chips */}
+      {/* Row 3, sm and up: applied-filter chips. Below sm they ride in row 2. */}
       {hasFilters && chips.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {chips.map((chip) => (
-            <Badge key={chip.key} variant="secondary" className="gap-1 pr-1 font-normal">
-              {chip.label}
-              <button
-                type="button"
-                aria-label={`Remove ${chip.label} filter`}
-                onClick={chip.onRemove}
-                className="ml-0.5 rounded-full p-0.5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </Badge>
-          ))}
+        <div className="hidden flex-wrap items-center gap-1.5 sm:flex">
+          {chips.map(renderChip)}
           <Button variant="ghost" size="xs" onClick={handleClearAll} className="text-xs text-muted-foreground">
             Clear all
           </Button>

@@ -1,7 +1,7 @@
-import { describe, test, expect, vi, afterEach } from "vitest";
+import { describe, test, it, expect, vi, afterEach } from "vitest";
 import { test as fcTest } from "@fast-check/vitest";
 import { fc } from "@fast-check/vitest";
-import { rangeToDateBounds, monthBounds, shiftDateRange, comparisonLabel, todayDateString } from "./date-utils";
+import { rangeToDateBounds, previousDateString, monthBounds, shiftDateRange, comparisonLabel, formatTxnSpan, todayDateString, formatDateShort, monthsSpanned } from "./date-utils";
 
 describe("todayDateString", () => {
   afterEach(() => {
@@ -40,6 +40,21 @@ describe("rangeToDateBounds", () => {
       expect(result.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(result.to).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(result.from! < result.to).toBe(true);
+    }
+  });
+
+  test("the start date is local, not UTC, early in the morning east of UTC", () => {
+    // Just after midnight in Tokyo it is still the previous day in UTC, so
+    // toISOString() started every window a day early.
+    const tz = process.env.TZ;
+    process.env.TZ = "Asia/Tokyo";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-22T15:30:00Z")); // Sep 23, 00:30 JST
+    try {
+      expect(rangeToDateBounds("1M")).toEqual({ from: "2026-08-23", to: "2026-09-23" });
+    } finally {
+      vi.useRealTimers();
+      process.env.TZ = tz;
     }
   });
 
@@ -114,11 +129,133 @@ describe("shiftDateRange", () => {
   });
 });
 
+describe("shiftDateRange on rolling preset ranges", () => {
+  // rangeToDateBounds("3M") produces a *rolling* window (e.g. Jun 2 - Sep 2),
+  // which spans four calendar months. The old month-span arithmetic added one
+  // to that span and snapped to end-of-month, producing a 118-day baseline for
+  // a 92-day window — so every comparison percentage was measured against a
+  // window 28% longer than the one it described.
+  const daysBetween = (a: string, b: string) =>
+    Math.round((new Date(b + "T12:00:00").getTime() - new Date(a + "T12:00:00").getTime()) / 86400000);
+
+  test("a rolling 3M window shifts to the immediately preceding window of equal length", () => {
+    const result = shiftDateRange("2026-06-02", "2026-09-02", "back", true);
+    expect(result).toEqual({ from: "2026-03-01", to: "2026-06-01" });
+  });
+
+  test("the baseline ends the day before the window starts, never on it", () => {
+    // Report queries include both ends, so a shared boundary day was counted
+    // in the window and in its baseline.
+    const result = shiftDateRange("2026-06-23", "2026-09-23", "back", false);
+    expect(result.to).toBe("2026-06-22");
+  });
+
+  test("the baseline is the same length as the window it compares against", () => {
+    const result = shiftDateRange("2026-06-02", "2026-09-02", "back", true);
+    expect(daysBetween(result.from, result.to)).toBe(daysBetween("2026-06-02", "2026-09-02"));
+  });
+
+  test("month-aligned presets still shift by whole calendar months", () => {
+    // Apr 1 - Jun 30 is three whole months, so the baseline is Jan 1 - Mar 31
+    // rather than an equal-day-count window landing mid-month.
+    expect(shiftDateRange("2026-04-01", "2026-06-30", "back", true)).toEqual({
+      from: "2026-01-01",
+      to: "2026-03-31",
+    });
+  });
+
+  test("forward shifts are symmetric with back shifts", () => {
+    const back = shiftDateRange("2026-06-02", "2026-09-02", "back", true);
+    expect(shiftDateRange(back.from, back.to, "forward", true)).toEqual({
+      from: "2026-06-02",
+      to: "2026-09-02",
+    });
+  });
+
+  fcTest.prop([fc.integer({ min: 1, max: 200 })])(
+    "a rolling preset baseline always matches the window length",
+    (daySpan) => {
+      const fromDate = new Date("2026-06-02T12:00:00");
+      const toDate = new Date(fromDate);
+      toDate.setDate(toDate.getDate() + daySpan);
+      const to = `${toDate.getFullYear()}-${String(toDate.getMonth() + 1).padStart(2, "0")}-${String(toDate.getDate()).padStart(2, "0")}`;
+      const result = shiftDateRange("2026-06-02", to, "back", true);
+      expect(daysBetween(result.from, result.to)).toBe(daySpan);
+    },
+  );
+});
+
+describe("formatDateShort", () => {
+  const thisYear = new Date().getFullYear();
+
+  test("omits the year for dates in the current year", () => {
+    expect(formatDateShort(`${thisYear}-03-05`)).toBe("Mar 5");
+  });
+
+  test("includes the year for dates outside it", () => {
+    // A custom 2019 range used to render as "Jan 1 - Mar 31" with nothing
+    // saying which year, and a year-over-year comparison label was
+    // indistinguishable from the current year's.
+    expect(formatDateShort(`${thisYear - 7}-01-01`)).toContain(String(thisYear - 7));
+  });
+});
+
 describe("comparisonLabel", () => {
   test("formats date range as vs label", () => {
     const result = comparisonLabel("2026-01-01", "2026-03-31");
     expect(result).toMatch(/^vs /);
     expect(result).toContain("Jan");
     expect(result).toContain("Mar");
+  });
+});
+
+describe("formatTxnSpan", () => {
+  test("formats a span inside one year without repeating the year", () => {
+    expect(formatTxnSpan("2026-02-11", "2026-05-11")).toBe("Feb 11 – May 11, 2026");
+  });
+
+  test("shows both years when the span crosses a year boundary", () => {
+    expect(formatTxnSpan("2025-11-20", "2026-01-08")).toBe("Nov 20, 2025 – Jan 8, 2026");
+  });
+
+  test("collapses a single-day span to one date", () => {
+    expect(formatTxnSpan("2026-03-04", "2026-03-04")).toBe("Mar 4, 2026");
+  });
+});
+
+describe("previousDateString", () => {
+  test("is the day before in timezones east of UTC", () => {
+    // Local midnight via toISOString() gave two days back in Tokyo, so the
+    // Investments day change never found a matching snapshot.
+    const tz = process.env.TZ;
+    process.env.TZ = "Asia/Tokyo";
+    try {
+      expect(previousDateString("2026-05-10")).toBe("2026-05-09");
+      expect(previousDateString("2026-03-01")).toBe("2026-02-28");
+    } finally {
+      process.env.TZ = tz;
+    }
+  });
+
+  test("is the day before in timezones west of UTC", () => {
+    // A bare "YYYY-MM-DD" parses as UTC midnight, which is still the previous
+    // evening in Los Angeles.
+    const tz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      expect(previousDateString("2026-05-10")).toBe("2026-05-09");
+    } finally {
+      process.env.TZ = tz;
+    }
+  });
+});
+
+describe("monthsSpanned", () => {
+  it("counts a three-month range as about three months, not the four it touches", () => {
+    expect(monthsSpanned("2026-06-23", "2026-09-23")).toBeCloseTo(3.06, 2);
+  });
+
+  it("never returns less than one month", () => {
+    expect(monthsSpanned("2026-09-01", "2026-09-05")).toBe(1);
   });
 });

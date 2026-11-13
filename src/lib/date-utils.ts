@@ -12,7 +12,18 @@ export function formatMonthShort(month: string): string {
 }
 
 export function formatDateShort(date: string): string {
-  return new Date(date + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const d = new Date(date + "T00:00:00");
+  // The year is only shown when it is not the current one. Most dates on screen
+  // are recent, where a year is noise (and would crowd chart axis ticks), but
+  // without it an older range reads as "Jan 1 - Mar 31" with nothing saying
+  // which year, and a year-over-year comparison label is indistinguishable
+  // from this year's.
+  const showYear = d.getFullYear() !== new Date().getFullYear();
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(showYear ? { year: "numeric" } : {}),
+  });
 }
 
 export function formatMonthLong(month: string): string {
@@ -31,11 +42,20 @@ export function shiftMonth(month: string, delta: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function formatLocalDate(d: Date): string {
+export function formatLocalDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/** The calendar day before a YYYY-MM-DD date, in the same local terms. */
+export function previousDateString(date: string): string {
+  // Noon, not midnight: local midnight read back through toISOString() lands
+  // on the day before in any timezone east of UTC.
+  const d = new Date(date + "T12:00:00");
+  d.setDate(d.getDate() - 1);
+  return formatLocalDate(d);
 }
 
 export function rangeToDateBounds(range: string): { from: string | null; to: string } {
@@ -44,16 +64,16 @@ export function rangeToDateBounds(range: string): { from: string | null; to: str
   switch (range) {
     case "1M":
       now.setMonth(now.getMonth() - 1);
-      return { from: now.toISOString().slice(0, 10), to };
+      return { from: formatLocalDate(now), to };
     case "3M":
       now.setMonth(now.getMonth() - 3);
-      return { from: now.toISOString().slice(0, 10), to };
+      return { from: formatLocalDate(now), to };
     case "6M":
       now.setMonth(now.getMonth() - 6);
-      return { from: now.toISOString().slice(0, 10), to };
+      return { from: formatLocalDate(now), to };
     case "1Y":
       now.setFullYear(now.getFullYear() - 1);
-      return { from: now.toISOString().slice(0, 10), to };
+      return { from: formatLocalDate(now), to };
     case "all":
       return { from: null, to };
     default:
@@ -90,6 +110,12 @@ export function monthBounds(monthStr: string): { from: string; to: string } {
   };
 }
 
+/** True when the range covers whole calendar months end to end (1st -> last). */
+function isWholeMonthSpan(fromDate: Date, toDate: Date): boolean {
+  const lastDayOfToMonth = new Date(toDate.getFullYear(), toDate.getMonth() + 1, 0).getDate();
+  return fromDate.getDate() === 1 && toDate.getDate() === lastDayOfToMonth;
+}
+
 export function shiftDateRange(
   from: string,
   to: string,
@@ -97,10 +123,17 @@ export function shiftDateRange(
   isPreset: boolean,
 ): { from: string; to: string } {
   const sign = direction === "back" ? -1 : 1;
+  const fromDate = new Date(from + "T12:00:00");
+  const toDate = new Date(to + "T12:00:00");
 
-  if (isPreset) {
-    const fromDate = new Date(from + "T12:00:00");
-    const toDate = new Date(to + "T12:00:00");
+  // Calendar-month arithmetic only makes sense for a range that actually spans
+  // whole months (Apr 1 - Jun 30). `rangeToDateBounds` returns a *rolling*
+  // window instead (Jun 2 - Sep 2), which touches four calendar months: the
+  // month-span arithmetic counted 4, and the end-of-month snap then stretched
+  // the baseline to 118 days against a 92-day window. A rolling window shifts
+  // by its own length, so the baseline is always the period immediately before
+  // it and exactly as long.
+  if (isPreset && isWholeMonthSpan(fromDate, toDate)) {
     const monthSpan =
       (toDate.getFullYear() - fromDate.getFullYear()) * 12 +
       (toDate.getMonth() - fromDate.getMonth()) + 1;
@@ -117,9 +150,10 @@ export function shiftDateRange(
     };
   }
 
-  const fromDate = new Date(from + "T12:00:00");
-  const toDate = new Date(to + "T12:00:00");
-  const daySpan = Math.round((toDate.getTime() - fromDate.getTime()) / 86400000);
+  // Both ends are inclusive in every report query, so the window covers
+  // daySpan + 1 days. Shifting by daySpan alone put the boundary day in both
+  // the window and its baseline.
+  const daySpan = Math.round((toDate.getTime() - fromDate.getTime()) / 86400000) + 1;
   const newFrom = new Date(fromDate);
   newFrom.setDate(newFrom.getDate() + sign * daySpan);
   const newTo = new Date(toDate);
@@ -138,7 +172,18 @@ export function comparisonLabel(from: string, to: string): string {
   return `vs ${fmt(fromDate)} – ${fmt(toDate)}`;
 }
 
-export type BillStatus = "overdue" | "due-soon" | "upcoming" | "inactive";
+/**
+ * Length of an inclusive `YYYY-MM-DD` range in average months (30.4375 days),
+ * never less than one. The divisor for a "monthly average": counting the
+ * calendar months a range touches made Jun 23 – Sep 23 four months, not three.
+ */
+export function monthsSpanned(from: string, to: string): number {
+  const days =
+    (Date.parse(to + "T00:00:00Z") - Date.parse(from + "T00:00:00Z")) / 86_400_000 + 1;
+  return Math.max(days / 30.4375, 1);
+}
+
+export type BillStatus ="overdue" | "due-soon" | "upcoming" | "inactive";
 
 export function deriveBillStatus(
   nextDate: string | null,
@@ -166,4 +211,28 @@ export function relativeDateLabel(dateStr: string): string {
   if (diffDays === 1) return "Tomorrow";
   if (diffDays <= 7) return `in ${diffDays} days`;
   return target.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/**
+ * Label the span of dates an account's transactions cover, e.g.
+ * "Feb 11 – May 11, 2026". Used on disconnected accounts in the Reports
+ * filter, where the span is what distinguishes a superseded account from a
+ * duplicated one — the old account stops where its replacement begins.
+ *
+ * The year is stated once when the span sits inside a single year, and on
+ * both ends when it crosses one, so the range is never ambiguous.
+ */
+export function formatTxnSpan(from: string, to: string): string {
+  const fromDate = new Date(from + "T00:00:00");
+  const toDate = new Date(to + "T00:00:00");
+  const md = (d: Date) =>
+    d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const mdy = (d: Date) =>
+    d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  if (from === to) return mdy(fromDate);
+  if (fromDate.getFullYear() !== toDate.getFullYear()) {
+    return `${mdy(fromDate)} – ${mdy(toDate)}`;
+  }
+  return `${md(fromDate)} – ${mdy(toDate)}`;
 }

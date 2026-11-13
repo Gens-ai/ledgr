@@ -1,23 +1,25 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb, type LedgrDb } from "@/db";
 import {
+  budgetCategories,
   categoryGroups,
   categories,
-  transactions,
-  transactionSplits,
-  recurringTransactions,
-  merchants,
   categoryRules,
-  budgetCategories,
+  merchants,
+  recurringTransactions,
+  transactionSplits,
+  transactions,
 } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
 import { countRows } from "@/lib/query-helpers";
 
-export interface CategoryOption {
+interface CategoryOption {
   id: string;
   name: string;
   icon: string | null;
   isIncome: boolean;
+  includeTransferInSpending: boolean;
+  isSystem: boolean;
   sortOrder: number;
 }
 
@@ -26,6 +28,7 @@ export interface CategoryGroup {
   name: string;
   icon: string | null;
   sortOrder: number;
+  isSystem: boolean;
   categories: CategoryOption[];
 }
 
@@ -55,6 +58,8 @@ export async function getCategories(
       name: cat.name,
       icon: cat.icon,
       isIncome: cat.isIncome ?? false,
+      includeTransferInSpending: cat.includeTransferInSpending ?? false,
+      isSystem: cat.isSystem ?? false,
       sortOrder: cat.sortOrder ?? 0,
     });
     catsByGroup.set(cat.groupId, list);
@@ -65,6 +70,7 @@ export async function getCategories(
     name: g.name,
     icon: g.icon,
     sortOrder: g.sortOrder ?? 0,
+    isSystem: g.isSystem ?? false,
     categories: catsByGroup.get(g.id) ?? [],
   }));
 }
@@ -78,37 +84,56 @@ export interface CategoryUsage {
   budgetCategories: number;
 }
 
-/** Counts every row that references a category, across all six FK tables. Drives the
- * reassign-then-delete flow: zero total means the category can be deleted directly. */
+/**
+ * Fork: counts every row that references a category, across all six tables
+ * with a category foreign key. Drives delete-with-reassign: a zero total means
+ * the category can be deleted directly.
+ *
+ * Reads `transactions`, which has row-level security — call it inside
+ * withHousehold() or the restricted app role counts zero transactions.
+ * `categoryId` must already be verified as belonging to `householdId`: splits
+ * and budget lines have no household_id of their own, so they are matched on
+ * the (household-owned) category id alone.
+ */
 export async function getCategoryUsage(
   categoryId: string,
   householdId: string,
   db: LedgrDb = defaultDb,
 ): Promise<CategoryUsage> {
   const scoped = scopedQuery(householdId, db);
-
-  const [
-    [txnRow],
-    [splitRow],
-    [recurringRow],
-    [merchantRow],
-    [ruleRow],
-    [budgetCatRow],
-  ] = await Promise.all([
-    db.select({ count: countRows() }).from(transactions).where(scoped.where(transactions, eq(transactions.categoryId, categoryId))),
-    db.select({ count: countRows() }).from(transactionSplits).where(eq(transactionSplits.categoryId, categoryId)),
-    db.select({ count: countRows() }).from(recurringTransactions).where(scoped.where(recurringTransactions, eq(recurringTransactions.categoryId, categoryId))),
-    db.select({ count: countRows() }).from(merchants).where(scoped.where(merchants, eq(merchants.categoryId, categoryId))),
-    db.select({ count: countRows() }).from(categoryRules).where(scoped.where(categoryRules, eq(categoryRules.categoryId, categoryId))),
-    db.select({ count: countRows() }).from(budgetCategories).where(eq(budgetCategories.categoryId, categoryId)),
+  const [[txn], [split], [recurring], [merchant], [rule], [budgetLine]] = await Promise.all([
+    db
+      .select({ count: countRows() })
+      .from(transactions)
+      .where(scoped.where(transactions, eq(transactions.categoryId, categoryId))),
+    db
+      .select({ count: countRows() })
+      .from(transactionSplits)
+      .where(eq(transactionSplits.categoryId, categoryId)),
+    db
+      .select({ count: countRows() })
+      .from(recurringTransactions)
+      .where(scoped.where(recurringTransactions, eq(recurringTransactions.categoryId, categoryId))),
+    db
+      .select({ count: countRows() })
+      .from(merchants)
+      .where(scoped.where(merchants, eq(merchants.categoryId, categoryId))),
+    db
+      .select({ count: countRows() })
+      .from(categoryRules)
+      .where(scoped.where(categoryRules, eq(categoryRules.categoryId, categoryId))),
+    db
+      .select({ count: countRows() })
+      .from(budgetCategories)
+      .where(eq(budgetCategories.categoryId, categoryId)),
   ]);
 
   return {
-    transactions: txnRow?.count ?? 0,
-    transactionSplits: splitRow?.count ?? 0,
-    recurringTransactions: recurringRow?.count ?? 0,
-    merchants: merchantRow?.count ?? 0,
-    categoryRules: ruleRow?.count ?? 0,
-    budgetCategories: budgetCatRow?.count ?? 0,
+    transactions: txn?.count ?? 0,
+    transactionSplits: split?.count ?? 0,
+    recurringTransactions: recurring?.count ?? 0,
+    merchants: merchant?.count ?? 0,
+    categoryRules: rule?.count ?? 0,
+    budgetCategories: budgetLine?.count ?? 0,
   };
 }

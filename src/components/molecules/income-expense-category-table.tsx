@@ -1,6 +1,7 @@
 "use client";
 
 import { centsToDisplay } from "@/lib/money";
+import { activateOnKey } from "@/lib/a11y";
 import type { IncomeExpenseCategoryRow } from "@/queries/reports";
 import { ChevronRight } from "lucide-react";
 import { CategoryIconTile } from "@/components/atoms/category-icon";
@@ -17,7 +18,7 @@ import {
 
 interface IncomeExpenseCategoryTableProps {
   data: IncomeExpenseCategoryRow[];
-  onCategoryClick?: (categoryId: string, isIncome: boolean) => void;
+  onCategoryClick?: (categoryId: string | null, isIncome: boolean) => void;
 }
 
 export function IncomeExpenseCategoryTable({ data, onCategoryClick }: IncomeExpenseCategoryTableProps) {
@@ -42,7 +43,7 @@ function Section({
 }: {
   label: string;
   rows: IncomeExpenseCategoryRow[];
-  onCategoryClick?: (categoryId: string, isIncome: boolean) => void;
+  onCategoryClick?: (categoryId: string | null, isIncome: boolean) => void;
 }) {
   if (rows.length === 0) {
     return (
@@ -52,10 +53,12 @@ function Section({
     );
   }
 
-  const rowClass = onCategoryClick ? "cursor-pointer group" : "hover:bg-transparent";
+  const rowClass = onCategoryClick
+    ? "cursor-pointer group focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
+    : "hover:bg-transparent";
 
   return (
-    <div>
+    <div className="overflow-x-auto">
       <div className="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wider bg-muted/30">
         {label}
       </div>
@@ -64,16 +67,28 @@ function Section({
           <TableRow className="hover:bg-transparent text-muted-foreground">
             <TableHead className="h-auto px-3 py-1.5">Category</TableHead>
             <TableHead className="h-auto px-3 py-1.5 text-right">Total</TableHead>
-            <TableHead className="h-auto px-3 py-1.5 text-right">Monthly Avg</TableHead>
+            <TableHead className="hidden h-auto px-3 py-1.5 text-right sm:table-cell">
+              Monthly Avg
+            </TableHead>
             <TableHead className="h-auto px-3 py-1.5 text-right w-24">%</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.map((row) => (
             <TableRow
-              key={row.categoryId}
+              key={`${row.categoryId ?? "uncategorized"}-${row.isIncome}`}
+              tabIndex={onCategoryClick ? 0 : undefined}
+              role={onCategoryClick ? "button" : undefined}
+              aria-label={
+                onCategoryClick
+                  ? `Show ${row.categoryName} transactions, ${centsToDisplay(row.total)}`
+                  : undefined
+              }
               className={rowClass}
               onClick={() => onCategoryClick?.(row.categoryId, row.isIncome)}
+              onKeyDown={activateOnKey(
+                onCategoryClick ? () => onCategoryClick(row.categoryId, row.isIncome) : undefined,
+              )}
             >
               <TableCell className="px-3 py-2 flex items-center gap-2">
                 <CategoryIconTile name={row.categoryIcon} iconSize={14} className="size-6" />
@@ -85,7 +100,7 @@ function Section({
               <TableCell className="px-3 py-2 text-right tabular-nums font-medium">
                 {centsToDisplay(row.total)}
               </TableCell>
-              <TableCell className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+              <TableCell className="hidden px-3 py-2 text-right tabular-nums text-muted-foreground sm:table-cell">
                 {centsToDisplay(row.monthlyAverage)}
               </TableCell>
               <TableCell className="px-3 py-2 text-right">

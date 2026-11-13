@@ -1,23 +1,21 @@
 import { getHouseholdId } from "@/lib/auth/session";
+import { withHousehold } from "@/lib/household-context";
 import { getCategories } from "@/queries/categories";
-import { getAccounts } from "@/queries/accounts";
-import {
-  getSpendingByCategory,
-  getIncomeVsExpense,
-  getIncomeExpenseByCategory,
-  getCategoryTrends,
-  getReportNetWorthHistory,
-  getCashFlowSankey,
-  getSafeToSpend,
-  type ReportFilters,
-} from "@/queries/reports";
-import { rangeToDateBounds, shiftDateRange, comparisonLabel, getCurrentMonth } from "@/lib/date-utils";
+import { getReportFilterAccounts } from "@/queries/accounts";
+import { Suspense } from "react";
+import type { ReportFilters } from "@/queries/reports";
+import { aggregateSpending } from "@/lib/spending-helpers";
+import { buildCategoryColorMap } from "@/lib/category-colors";
+import { rangeToDateBounds, shiftDateRange, comparisonLabel } from "@/lib/date-utils";
+import { resolveReportDateSelection, DEFAULT_REPORT_PRESET } from "@/lib/report-date-selection";
 import { ReportFilterBar } from "@/components/organisms/report-filter-bar";
 import { ReportTabs } from "@/components/organisms/report-tabs";
+import { ReportPanel, type ReportContext, type ReportTab } from "@/components/organisms/report-panels";
+import { ReportPanelSkeleton } from "@/components/organisms/report-panel-skeleton";
 import { SavedReportPicker } from "@/components/organisms/saved-report-picker";
 import { getSavedReportsByHousehold } from "@/queries/saved-reports";
 
-const VALID_TABS = new Set(["spending", "income-expense", "cash-flow", "trends", "net-worth"]);
+const VALID_TABS = new Set<string>(["spending", "income-expense", "cash-flow", "trends", "net-worth"]);
 
 export default async function ReportsPage({
   searchParams,
@@ -27,17 +25,24 @@ export default async function ReportsPage({
   const householdId = await getHouseholdId();
   const params = await searchParams;
 
-  const tab = typeof params.tab === "string" && VALID_TABS.has(params.tab) ? params.tab : "spending";
+  const tab: ReportTab =
+    typeof params.tab === "string" && VALID_TABS.has(params.tab) ? (params.tab as ReportTab) : "spending";
   const preset = typeof params.preset === "string" ? params.preset : null;
+  const from = typeof params.from === "string" ? params.from : null;
+  const to = typeof params.to === "string" ? params.to : null;
+
+  // Shared with ReportFilterBar so the page and the chip above it can never
+  // describe the same URL differently.
+  const { effectivePreset, isAllTime, isPreset } = resolveReportDateSelection({ from, to, preset });
 
   let dateFrom: string;
   let dateTo: string;
 
-  if (typeof params.from === "string" && typeof params.to === "string") {
-    dateFrom = params.from;
-    dateTo = params.to;
+  if (from && to) {
+    dateFrom = from;
+    dateTo = to;
   } else {
-    const bounds = rangeToDateBounds(preset ?? "3M");
+    const bounds = rangeToDateBounds(effectivePreset ?? DEFAULT_REPORT_PRESET);
     dateFrom = bounds.from ?? "2000-01-01";
     dateTo = bounds.to;
   }
@@ -48,8 +53,6 @@ export default async function ReportsPage({
   const filters: ReportFilters = { dateFrom, dateTo, accountIds, categoryIds };
 
   // Comparison period
-  const isPreset = preset !== null;
-  const isAllTime = preset === "all" || (!params.from && !params.to && !preset);
   let compLabel: string | null = null;
   let compPeriod: { dateFrom: string; dateTo: string } | undefined;
 
@@ -59,85 +62,45 @@ export default async function ReportsPage({
     compLabel = comparisonLabel(shifted.from, shifted.to);
   }
 
-  // These three are independent of the active tab — kick them off up front so
-  // they run concurrently with the tab-specific query below.
-  const sharedPromise = Promise.all([
+  const [allCategories, filterAccounts, savedReports, rangeSpending] = await Promise.all([
     getCategories(householdId),
-    getAccounts(householdId),
+    getReportFilterAccounts(householdId),
     getSavedReportsByHousehold(householdId),
+    // One spend ranking for the range colours every tab, so a category keeps
+    // its colour from Spending to Cash Flow to Trends. The category filter is
+    // left out so narrowing to a few categories doesn't recolour them.
+    withHousehold(householdId, (tx) =>
+      aggregateSpending(householdId, { ...filters, categoryIds: undefined }, tx),
+    ),
   ]);
 
-  // Only fetch data for active tab
-  let spendingData;
-  let incomeExpenseData;
-  let incomeExpenseCategoryData;
-  let trendsData;
-  let netWorthData;
-  let sankeyData;
-  let safeToSpendData;
-  let cashFlowBarData;
+  const ctx: ReportContext = {
+    householdId,
+    filters,
+    compPeriod,
+    compLabel,
+    categories: allCategories,
+    categoryColors: buildCategoryColorMap(rangeSpending),
+  };
 
-  switch (tab) {
-    case "spending":
-      spendingData = await getSpendingByCategory(householdId, filters, undefined, compPeriod);
-      break;
-    case "income-expense": {
-      const [ie, ieCat] = await Promise.all([
-        getIncomeVsExpense(householdId, filters),
-        getIncomeExpenseByCategory(householdId, filters),
-      ]);
-      incomeExpenseData = ie;
-      incomeExpenseCategoryData = ieCat;
-      break;
-    }
-    case "cash-flow": {
-      const [sankey, safeToSpend, cashFlowBar] = await Promise.all([
-        getCashFlowSankey(householdId, filters),
-        getSafeToSpend(householdId),
-        getIncomeVsExpense(householdId, filters),
-      ]);
-      sankeyData = sankey;
-      safeToSpendData = safeToSpend;
-      cashFlowBarData = cashFlowBar;
-      break;
-    }
-    case "trends":
-      trendsData = await getCategoryTrends(householdId, filters);
-      break;
-    case "net-worth":
-      netWorthData = await getReportNetWorthHistory(householdId, filters);
-      break;
-  }
-
-  const currentMonth = getCurrentMonth();
-  const isCurrentMonth = dateFrom <= `${currentMonth}-01` && dateTo >= `${currentMonth}-01`;
-
-  const [allCategories, allAccounts, savedReports] = await sharedPromise;
-  const accountOptions = allAccounts.map((a) => ({ id: a.id, name: a.name }));
+  // Keyed on the tab and every filter, so any change streams a fresh panel
+  // behind the skeleton instead of leaving stale figures under new filters.
+  const panelKey = [tab, dateFrom, dateTo, accountIds?.join(","), categoryIds?.join(",")].join("|");
 
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold tracking-tight">Reports</h1>
 
       <div className="flex items-start justify-between gap-2">
-        <ReportFilterBar accounts={accountOptions} categories={allCategories} />
+        <ReportFilterBar accounts={filterAccounts} categories={allCategories} />
         <SavedReportPicker reports={savedReports} activeTab={tab} />
       </div>
 
-      <ReportTabs
-        activeTab={tab}
-        spendingData={spendingData}
-        incomeExpenseData={incomeExpenseData}
-        incomeExpenseCategoryData={incomeExpenseCategoryData}
-        trendsData={trendsData}
-        netWorthData={netWorthData}
-        sankeyNodes={sankeyData?.nodes}
-        sankeyLinks={sankeyData?.links}
-        cashFlowBarData={cashFlowBarData}
-        safeToSpendData={safeToSpendData}
-        isCurrentMonth={isCurrentMonth}
-        comparisonLabel={compLabel}
-      />
+      <ReportTabs activeTab={tab}>
+        <Suspense key={panelKey} fallback={<ReportPanelSkeleton />}>
+          <ReportPanel tab={tab} ctx={ctx} />
+        </Suspense>
+      </ReportTabs>
     </div>
   );
 }

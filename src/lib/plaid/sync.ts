@@ -1,26 +1,30 @@
 import { v4 as uuid } from "uuid";
-import { eq, and, isNull, inArray } from "drizzle-orm";
+import { eq, and, isNull, inArray, sql } from "drizzle-orm";
 import { categorizeSyncedTransactions } from "@/lib/categorization/engine";
+import { applyTransferDetection } from "@/lib/transfer-detection";
+import { computeInvestmentTransferTagging } from "@/lib/investment-transfer-tagging";
+import { syncRecurringTransactions } from "./recurring";
 import type { PlaidApi } from "plaid";
 import {
   PlaidSyncResponseSchema,
   type PlaidTransaction,
   type PlaidRemovedTransaction,
 } from "./schemas";
-import { plaidAmountToCents, normalizeAmount } from "@/lib/money";
+import { plaidAmountToCents, plaidBalanceToCents, normalizeAmount } from "@/lib/money";
 import { decrypt } from "@/lib/encryption";
 import { getPlaidClient } from "./client";
 import {
   extractPlaidErrorCode,
-  titleCase,
   REAUTH_ERROR_CODES,
   TRANSIENT_ERROR_CODES,
   retryWithBackoff,
 } from "./utils";
+import { titleCase } from "@/lib/text-utils";
 import { cleanTransactionName } from "@/lib/import/clean-name";
+import { withHousehold } from "@/lib/household-context";
 import type { LedgrDb } from "@/db";
 import {
-  plaidItems,
+  bankConnections,
   syncLog,
   transactions,
   accounts,
@@ -53,12 +57,12 @@ export interface ProcessedBatch {
   inserts: TransactionRow[];
   upserts: TransactionRow[];
   merchantUpserts: MerchantUpsert[];
-  pendingToRemove: string[]; // plaid_transaction_ids to soft-delete
-  removedIds: string[]; // plaid_transaction_ids to soft-delete
+  pendingToRemove: string[]; // external_ids to soft-delete
+  removedIds: string[]; // external_ids to soft-delete
 }
 
 interface TransactionRow {
-  plaidTransactionId: string;
+  externalId: string;
   plaidAccountId: string;
   date: string;
   originalName: string;
@@ -146,8 +150,6 @@ export function processBatch(
   added: PlaidTransaction[],
   modified: PlaidTransaction[],
   removed: PlaidRemovedTransaction[],
-  householdId: string,
-  accountTypeMap: Map<string, string>,
 ): ProcessedBatch {
   // Build merchant upserts (deduplicated by normalized name)
   const merchantMap = new Map<string, MerchantUpsert>();
@@ -174,10 +176,9 @@ export function processBatch(
 
   function toRow(txn: PlaidTransaction): TransactionRow {
     const amountCents = plaidAmountToCents(txn.amount)!;
-    const accountType = accountTypeMap.get(txn.account_id) ?? "other";
-    const normalizedAmt = normalizeAmount(amountCents, accountType);
+    const normalizedAmt = normalizeAmount(amountCents);
     return {
-      plaidTransactionId: txn.transaction_id,
+      externalId: txn.transaction_id,
       plaidAccountId: txn.account_id,
       date: txn.date,
       originalName: txn.name,
@@ -251,23 +252,29 @@ async function applyToDb(
 ): Promise<{ addedCount: number; modifiedCount: number; removedCount: number }> {
   const now = new Date();
 
-  return db.transaction(async (tx) => {
+  return withHousehold(householdId, async (tx) => {
     // --- Build account lookup: plaid_account_id → internal account id ---
     const accountRows = await tx
-      .select({ id: accounts.id, plaidAccountId: accounts.plaidAccountId })
+      .select({
+        id: accounts.id,
+        externalAccountId: accounts.externalAccountId,
+        type: accounts.type,
+      })
       .from(accounts)
       .where(
         and(
           eq(accounts.householdId, householdId),
-          eq(accounts.plaidItemId, itemId),
+          eq(accounts.bankConnectionId, itemId),
           isNull(accounts.deletedAt),
         ),
       );
 
     const plaidToInternal = new Map<string, string>();
+    const typeByInternalId = new Map<string, string>();
     for (const row of accountRows) {
-      if (row.plaidAccountId) {
-        plaidToInternal.set(row.plaidAccountId, row.id);
+      typeByInternalId.set(row.id, row.type);
+      if (row.externalAccountId) {
+        plaidToInternal.set(row.externalAccountId, row.id);
       }
     }
 
@@ -338,11 +345,15 @@ async function applyToDb(
         ? merchantNameToId.get(row.merchantName) ?? null
         : null;
 
+      const isInvestmentAccount = typeByInternalId.get(internalAccountId) === "investment";
+      const tagging = computeInvestmentTransferTagging(isInvestmentAccount, row.isTransfer);
+
       insertRows.push({
         id: uuid(),
         accountId: internalAccountId,
         householdId,
-        plaidTransactionId: row.plaidTransactionId,
+        externalId: row.externalId,
+        provider: "plaid",
         pendingTransactionId: row.pendingTransactionId,
         merchantId,
         date: row.date,
@@ -354,7 +365,8 @@ async function applyToDb(
         pending: row.pending,
         pfcPrimary: row.pfcPrimary,
         pfcDetailed: row.pfcDetailed,
-        isTransfer: row.isTransfer,
+        isTransfer: tagging.isTransfer,
+        transferSource: tagging.transferSource,
         createdAt: now,
         updatedAt: now,
       });
@@ -372,15 +384,15 @@ async function applyToDb(
       .map((row) => ({ row, internalAccountId: plaidToInternal.get(row.plaidAccountId) }))
       .filter((x): x is { row: TransactionRow; internalAccountId: string } => !!x.internalAccountId);
 
-    const upsertPlaidIds = upsertsWithAccount.map(({ row }) => row.plaidTransactionId);
-    const existingUpsertRows = upsertPlaidIds.length
+    const upsertExternalIds = upsertsWithAccount.map(({ row }) => row.externalId);
+    const existingUpsertRows = upsertExternalIds.length
       ? await tx
-          .select({ id: transactions.id, plaidTransactionId: transactions.plaidTransactionId })
+          .select({ id: transactions.id, externalId: transactions.externalId })
           .from(transactions)
-          .where(inArray(transactions.plaidTransactionId, upsertPlaidIds))
+          .where(inArray(transactions.externalId, upsertExternalIds))
       : [];
-    const existingIdByPlaidId = new Map(
-      existingUpsertRows.map((r) => [r.plaidTransactionId, r.id]),
+    const existingIdByExternalId = new Map(
+      existingUpsertRows.map((r) => [r.externalId, r.id]),
     );
 
     const upsertInsertRows: (typeof transactions.$inferInsert)[] = [];
@@ -389,7 +401,11 @@ async function applyToDb(
         ? merchantNameToId.get(row.merchantName) ?? null
         : null;
 
-      const existingId = existingIdByPlaidId.get(row.plaidTransactionId);
+      const isInvestmentAccount = typeByInternalId.get(internalAccountId) === "investment";
+      const { isTransfer: computedIsTransfer, transferSource: computedTransferSource } =
+        computeInvestmentTransferTagging(isInvestmentAccount, row.isTransfer);
+
+      const existingId = existingIdByExternalId.get(row.externalId);
       if (existingId) {
         await tx.update(transactions)
           .set({
@@ -405,7 +421,15 @@ async function applyToDb(
             pendingTransactionId: row.pendingTransactionId,
             pfcPrimary: row.pfcPrimary,
             pfcDetailed: row.pfcDetailed,
-            isTransfer: row.isTransfer,
+            // Plaid's PFC re-derives isTransfer on every modified row, which
+            // would otherwise silently revert a user's own transfer decision
+            // (and orphan any transferPairId). Keep manual decisions; let PFC
+            // (or the investment-account override above) refresh everything
+            // else.
+            isTransfer: sql`CASE WHEN ${transactions.transferSource} IN ('manual','manual_rejected')
+              THEN ${transactions.isTransfer} ELSE ${computedIsTransfer} END`,
+            transferSource: sql`CASE WHEN ${transactions.transferSource} IN ('manual','manual_rejected')
+              THEN ${transactions.transferSource} ELSE ${computedTransferSource} END`,
             updatedAt: now,
             // Preserve user's manual categorization and reviewed status
           })
@@ -415,7 +439,8 @@ async function applyToDb(
           id: uuid(),
           accountId: internalAccountId,
           householdId,
-          plaidTransactionId: row.plaidTransactionId,
+          externalId: row.externalId,
+          provider: "plaid",
           pendingTransactionId: row.pendingTransactionId,
           merchantId,
           date: row.date,
@@ -427,7 +452,8 @@ async function applyToDb(
           pending: row.pending,
           pfcPrimary: row.pfcPrimary,
           pfcDetailed: row.pfcDetailed,
-          isTransfer: row.isTransfer,
+          isTransfer: computedIsTransfer,
+          transferSource: computedTransferSource,
           createdAt: now,
           updatedAt: now,
         });
@@ -439,11 +465,11 @@ async function applyToDb(
     const modifiedCount = upsertsWithAccount.length;
 
     // --- Soft-delete pending→posted replacements, inheriting category ---
-    for (const pendingPlaidId of processed.pendingToRemove) {
+    for (const pendingExternalId of processed.pendingToRemove) {
       // Only remove the pending row if its posted replacement was actually
       // inserted this batch — otherwise (e.g. unmapped account) the
       // transaction would silently vanish.
-      if (!insertedPendingIds.has(pendingPlaidId)) continue;
+      if (!insertedPendingIds.has(pendingExternalId)) continue;
 
       const [pendingRow] = await tx
         .select({
@@ -452,12 +478,12 @@ async function applyToDb(
           reviewed: transactions.reviewed,
         })
         .from(transactions)
-        .where(eq(transactions.plaidTransactionId, pendingPlaidId))
+        .where(eq(transactions.externalId, pendingExternalId))
         .limit(1);
 
       await tx.update(transactions)
         .set({ deletedAt: now, updatedAt: now })
-        .where(eq(transactions.plaidTransactionId, pendingPlaidId));
+        .where(eq(transactions.externalId, pendingExternalId));
 
       // If the pending transaction was manually categorized, copy to the posted version
       if (pendingRow?.categoryId) {
@@ -466,7 +492,7 @@ async function applyToDb(
           .from(transactions)
           .where(
             and(
-              eq(transactions.pendingTransactionId, pendingPlaidId),
+              eq(transactions.pendingTransactionId, pendingExternalId),
               isNull(transactions.deletedAt),
             ),
           )
@@ -491,7 +517,7 @@ async function applyToDb(
       const result = await tx
         .update(transactions)
         .set({ deletedAt: now, updatedAt: now })
-        .where(inArray(transactions.plaidTransactionId, processed.removedIds));
+        .where(inArray(transactions.externalId, processed.removedIds));
       removedCount = result.rowCount ?? 0;
     }
 
@@ -502,7 +528,12 @@ async function applyToDb(
 
       await tx.update(accounts)
         .set({
-          currentBalance: plaidAmountToCents(ab.balances.current),
+          // Plaid reports credit/loan balances positive when owed; Ledgr
+          // stores owed as negative. See db/schema/accounts.ts.
+          currentBalance: plaidBalanceToCents(
+            ab.balances.current,
+            typeByInternalId.get(internalId) ?? "other",
+          ),
           availableBalance: plaidAmountToCents(ab.balances.available),
           creditLimit: plaidAmountToCents(ab.balances.limit),
           updatedAt: now,
@@ -511,15 +542,15 @@ async function applyToDb(
     }
 
     // --- Update sync cursor ---
-    await tx.update(plaidItems)
+    await tx.update(bankConnections)
       .set({ syncCursor: newCursor, updatedAt: now })
-      .where(eq(plaidItems.id, itemId));
+      .where(eq(bankConnections.id, itemId));
 
     // --- Write sync_log entry ---
     await tx.insert(syncLog)
       .values({
         id: uuid(),
-        plaidItemId: itemId,
+        connectionId: itemId,
         cursorAfter: newCursor,
         addedCount,
         modifiedCount,
@@ -528,12 +559,12 @@ async function applyToDb(
       });
 
     // --- Reset item status to active ---
-    await tx.update(plaidItems)
+    await tx.update(bankConnections)
       .set({ status: "active", errorCode: null, updatedAt: now })
-      .where(eq(plaidItems.id, itemId));
+      .where(eq(bankConnections.id, itemId));
 
     return { addedCount, modifiedCount, removedCount };
-  });
+  }, db);
 }
 
 // ---------------------------------------------------------------------------
@@ -571,43 +602,30 @@ async function doSync(
   const now = new Date();
 
   try {
-    // Read plaid_items row
-    const [item] = await db
-      .select()
-      .from(plaidItems)
-      .where(
-        and(eq(plaidItems.id, itemId), eq(plaidItems.householdId, householdId)),
-      )
-      .limit(1);
+    // Read the bank_connections row. Kept as its own short-lived
+    // transaction — not held open across the Plaid API round trip (with
+    // retries) that follows.
+    const initial = await withHousehold(householdId, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(bankConnections)
+        .where(
+          and(eq(bankConnections.id, itemId), eq(bankConnections.householdId, householdId)),
+        )
+        .limit(1);
 
-    if (!item) {
+      if (!row) return null;
+
+      return { item: row };
+    }, db);
+
+    if (!initial) {
       return { success: false, error: `Plaid item ${itemId} not found` };
     }
+    const { item } = initial;
 
     // Decrypt access token
-    const accessToken = decrypt(item.accessToken);
-
-    // Build accountTypeMap
-    const accountRows = await db
-      .select({
-        plaidAccountId: accounts.plaidAccountId,
-        type: accounts.type,
-      })
-      .from(accounts)
-      .where(
-        and(
-          eq(accounts.householdId, householdId),
-          eq(accounts.plaidItemId, itemId),
-          isNull(accounts.deletedAt),
-        ),
-      );
-
-    const accountTypeMap = new Map<string, string>();
-    for (const row of accountRows) {
-      if (row.plaidAccountId) {
-        accountTypeMap.set(row.plaidAccountId, row.type);
-      }
-    }
+    const accessToken = decrypt(item.credential);
 
     // Fetch all pages
     const client = getPlaidClient();
@@ -619,8 +637,6 @@ async function doSync(
       fetchResult.added,
       fetchResult.modified,
       fetchResult.removed,
-      householdId,
-      accountTypeMap,
     );
 
     // Apply to DB
@@ -640,13 +656,39 @@ async function doSync(
       console.error("Categorization failed for item", JSON.stringify(itemId), catError);
     }
 
-    // AI categorization (async, non-fatal, separate from sync engine)
+    // Detect self-transfers between the household's own accounts (non-fatal)
     try {
-      const { categorizeWithAi } = await import("@/lib/ai/categorize");
-      await categorizeWithAi(householdId, db);
-    } catch (aiError) {
-      console.error("AI categorization failed for item", JSON.stringify(itemId), aiError);
+      await applyTransferDetection(householdId, db);
+    } catch (transferError) {
+      console.error("Transfer detection failed for item", JSON.stringify(itemId), transferError);
     }
+
+    // Refresh recurring bills/income streams from Plaid's own recurring-
+    // transactions API (non-fatal). syncInstitution/doSync runs on every
+    // webhook-triggered sync and the daily safety-sync backstop, so this one
+    // wiring point keeps streams current without a separate scheduled task.
+    try {
+      await syncRecurringTransactions(itemId, householdId, accessToken, db);
+    } catch (recurringError) {
+      console.error("Recurring sync failed for item", JSON.stringify(itemId), recurringError);
+    }
+
+    // AI categorization and merchant/logo resolution — fire-and-forget, same
+    // pattern as syncInvestments in actions/sync.ts. Both are household-scoped
+    // (not just this item's transactions) and internally coalesced, so it's
+    // safe for several items to trigger them concurrently without blocking
+    // the sync response on LLM round-trips.
+    import("@/lib/ai/categorize")
+      .then(({ categorizeWithAi }) => categorizeWithAi(householdId, db))
+      .catch((aiError) => {
+        console.error("AI categorization failed for item", JSON.stringify(itemId), aiError);
+      });
+
+    import("@/lib/ai/resolve-merchants")
+      .then(({ resolveMerchantLogos }) => resolveMerchantLogos(householdId, db))
+      .catch((merchantError) => {
+        console.error("AI merchant resolution failed for item", JSON.stringify(itemId), merchantError);
+      });
 
     return {
       success: true,
@@ -660,33 +702,36 @@ async function doSync(
     const errorMessage =
       err instanceof Error ? err.message : "Unknown sync error";
 
-    // Classify error and update item status
-    if (errorCode && REAUTH_ERROR_CODES.has(errorCode)) {
-      await db.update(plaidItems)
-        .set({
-          status: "reauth_required",
-          errorCode,
-          updatedAt: now,
-        })
-        .where(eq(plaidItems.id, itemId));
-    } else if (errorCode && TRANSIENT_ERROR_CODES.has(errorCode)) {
-      await db.update(plaidItems)
-        .set({
-          status: "error",
-          errorCode,
-          updatedAt: now,
-        })
-        .where(eq(plaidItems.id, itemId));
-    }
+    // Classify error and update item status. sync_log has no householdId
+    // column (not RLS-scoped), but bank_connections does, so both still need
+    // to run inside withHousehold to actually write the status update.
+    await withHousehold(householdId, async (tx) => {
+      if (errorCode && REAUTH_ERROR_CODES.has(errorCode)) {
+        await tx.update(bankConnections)
+          .set({
+            status: "reauth_required",
+            errorCode,
+            updatedAt: now,
+          })
+          .where(eq(bankConnections.id, itemId));
+      } else if (errorCode && TRANSIENT_ERROR_CODES.has(errorCode)) {
+        await tx.update(bankConnections)
+          .set({
+            status: "error",
+            errorCode,
+            updatedAt: now,
+          })
+          .where(eq(bankConnections.id, itemId));
+      }
 
-    // Write error sync_log entry
-    await db.insert(syncLog)
-      .values({
-        id: uuid(),
-        plaidItemId: itemId,
-        error: errorCode ?? errorMessage,
-        syncedAt: now,
-      });
+      await tx.insert(syncLog)
+        .values({
+          id: uuid(),
+          connectionId: itemId,
+          error: errorCode ?? errorMessage,
+          syncedAt: now,
+        });
+    }, db);
 
     return { success: false, error: errorCode ?? errorMessage };
   }

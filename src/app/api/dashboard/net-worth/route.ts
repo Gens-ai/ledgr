@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getHouseholdId } from "@/lib/auth/session";
 import { getNetWorthHistory, getCashFlow } from "@/queries/dashboard";
 import { rangeToMonths } from "@/lib/date-utils";
+import { withHousehold } from "@/lib/household-context";
 
 // "All" (capital) matches DateRangeSelector's values on the client.
 const VALID_RANGES = ["1M", "3M", "6M", "1Y", "All"] as const;
@@ -26,11 +27,16 @@ export async function GET(request: NextRequest) {
   const metric: Metric = isValidMetric(rawMetric) ? rawMetric : "net-worth";
 
   if (metric === "net-worth") {
-    const history = await getNetWorthHistory(householdId, range === "All" ? "all" : range);
-    return NextResponse.json(history.map((p) => ({ date: p.date, value: p.netWorth })));
+    // Full NetWorthPoint[] (with coverage counts) — the hero needs them to mark
+    // partial-history stretches.
+    return NextResponse.json(await getNetWorthHistory(householdId, range === "All" ? "all" : range));
   }
 
-  const cashFlow = await getCashFlow(householdId, rangeToMonths(range));
+  // Income/expenses are monthly totals, so the range is read as a month count.
+  // getCashFlow reads `transactions`, which has row-level security.
+  const cashFlow = await withHousehold(householdId, (tx) =>
+    getCashFlow(householdId, rangeToMonths(range), tx),
+  );
   return NextResponse.json(
     cashFlow.map((row) => ({ date: row.month, value: metric === "income" ? row.income : row.expenses }))
   );

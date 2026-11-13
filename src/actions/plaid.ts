@@ -6,13 +6,13 @@ import { revalidatePath } from "next/cache";
 import { Products, CountryCode } from "plaid";
 import { getPlaidClient } from "@/lib/plaid/client";
 import { encrypt, decrypt } from "@/lib/encryption";
-import { plaidAmountToCents } from "@/lib/money";
+import { plaidAmountToCents, plaidBalanceToCents } from "@/lib/money";
 import { mapPlaidAccountType, extractPlaidErrorCode, extractPlaidErrorMessage } from "@/lib/plaid/utils";
 import { todayDateString } from "@/lib/date-utils";
 import { getHouseholdId } from "@/lib/auth/session";
 import { authorizeAction } from "@/lib/auth/authorize-action";
 import { db as defaultDb, type LedgrDb } from "@/db";
-import { plaidItems, accounts, balanceHistory, institutionLogos } from "@/db/schema";
+import { bankConnections, accounts, balanceHistory, institutionLogos } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
 import { syncInstitution } from "@/lib/plaid/sync";
 import { syncInvestments } from "@/lib/plaid/investments";
@@ -85,12 +85,12 @@ export async function exchangeAndStoreAccounts(
 
     if (institutionId) {
       const [existing] = await db
-        .select({ id: plaidItems.id })
-        .from(plaidItems)
+        .select({ id: bankConnections.id })
+        .from(bankConnections)
         .where(
           and(
-            eq(plaidItems.householdId, householdId),
-            eq(plaidItems.plaidInstitutionId, institutionId)
+            eq(bankConnections.householdId, householdId),
+            eq(bankConnections.plaidInstitutionId, institutionId)
           )
         )
         .limit(1);
@@ -108,11 +108,12 @@ export async function exchangeAndStoreAccounts(
     const today = todayDateString();
 
     await db.transaction(async (tx) => {
-      await tx.insert(plaidItems)
+      await tx.insert(bankConnections)
         .values({
           id: plaidItemId,
           householdId,
-          accessToken: encrypt(accessToken),
+          provider: "plaid",
+          credential: encrypt(accessToken),
           plaidInstitutionId: institutionId,
           plaidItemId: itemRes.data.item.item_id,
           institutionName,
@@ -124,18 +125,21 @@ export async function exchangeAndStoreAccounts(
         await tx.insert(institutionLogos)
           .values({
             id: uuid(),
-            plaidItemId: plaidItemId,
+            connectionId: plaidItemId,
             logo: institutionLogo,
           });
       }
 
       for (const acct of plaidAccounts) {
+        const accountType = mapPlaidAccountType(acct.type, acct.subtype ?? null);
         const accountFields = {
           name: acct.name,
           officialName: acct.official_name ?? null,
-          type: mapPlaidAccountType(acct.type, acct.subtype ?? null),
+          type: accountType,
           subtype: acct.subtype ?? null,
-          currentBalance: plaidAmountToCents(acct.balances.current ?? null),
+          // Plaid reports credit/loan balances positive when owed; Ledgr
+          // stores owed as negative. See db/schema/accounts.ts.
+          currentBalance: plaidBalanceToCents(acct.balances.current ?? null, accountType),
           availableBalance: plaidAmountToCents(acct.balances.available ?? null),
           creditLimit: plaidAmountToCents(acct.balances.limit ?? null),
           currency: acct.balances.iso_currency_code ?? "USD",
@@ -146,7 +150,7 @@ export async function exchangeAndStoreAccounts(
           .from(accounts)
           .where(
             and(
-              eq(accounts.plaidAccountId, acct.account_id),
+              eq(accounts.externalAccountId, acct.account_id),
               eq(accounts.householdId, householdId),
               isNotNull(accounts.deletedAt),
             ),
@@ -159,7 +163,7 @@ export async function exchangeAndStoreAccounts(
         if (existingDeleted) {
           accountId = existingDeleted.id;
           await tx.update(accounts)
-            .set({ ...accountFields, deletedAt: null, plaidItemId, updatedAt: new Date() })
+            .set({ ...accountFields, deletedAt: null, bankConnectionId: plaidItemId, updatedAt: new Date() })
             .where(eq(accounts.id, existingDeleted.id));
           console.log(`[plaid] Resurrected account ${accountId} (plaid: ${acct.account_id})`);
         } else {
@@ -168,8 +172,8 @@ export async function exchangeAndStoreAccounts(
             .values({
               id: accountId,
               householdId,
-              plaidItemId,
-              plaidAccountId: acct.account_id,
+              bankConnectionId: plaidItemId,
+              externalAccountId: acct.account_id,
               ...accountFields,
             });
           console.log(`[plaid] Created new account ${accountId} (plaid: ${acct.account_id})`);
@@ -240,11 +244,11 @@ export async function disconnectPlaidItem(
 
   const [item] = await db
     .select({
-      id: plaidItems.id,
-      accessToken: plaidItems.accessToken,
+      id: bankConnections.id,
+      credential: bankConnections.credential,
     })
-    .from(plaidItems)
-    .where(scoped.where(plaidItems, eq(plaidItems.id, plaidItemId)))
+    .from(bankConnections)
+    .where(scoped.where(bankConnections, eq(bankConnections.id, plaidItemId)))
     .limit(1);
 
   if (!item) {
@@ -253,7 +257,7 @@ export async function disconnectPlaidItem(
 
   try {
     await getPlaidClient().itemRemove({
-      access_token: decrypt(item.accessToken),
+      access_token: decrypt(item.credential),
     });
   } catch {
     // Best-effort — continue with local cleanup even if Plaid call fails
@@ -262,11 +266,11 @@ export async function disconnectPlaidItem(
   const now = new Date();
   await db.transaction(async (tx) => {
     await tx.update(accounts)
-      .set({ deletedAt: now, plaidItemId: null })
-      .where(eq(accounts.plaidItemId, plaidItemId));
+      .set({ deletedAt: now, bankConnectionId: null })
+      .where(eq(accounts.bankConnectionId, plaidItemId));
 
-    await tx.delete(plaidItems)
-      .where(eq(plaidItems.id, plaidItemId));
+    await tx.delete(bankConnections)
+      .where(eq(bankConnections.id, plaidItemId));
   });
 
   revalidatePath("/accounts");
