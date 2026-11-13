@@ -203,9 +203,10 @@ committing:
 This checkout is a fork of `KenTaniguchi-R/ledgr` (remote `upstream`). Facts
 below are specific to the fork; everything above is shared with upstream.
 
-- **Evaluation docs and issues.** `docs/vision.md` and `docs/gaps.md` are an
+- **Evaluation docs and issues.** `docs/vision.md` and `docs/planning/gaps.md` are an
   outside-in evaluation of the shipped code against the README. `docs/issues/`
-  tracks issues as one markdown file per issue (`ISSUE-NNN-slug.md`). Both
+  tracks issues as one markdown file per issue (`ISSUE-NNN-slug.md`), and
+  `docs/planning/ideas.md` is a ranked feature brainstorm. All three
   predate the upstream merge of 2026-11, so check an item against the code
   before relying on it (e.g. category rules now have a UI and action).
 - **Savings Advisor (fork-only).** An on-demand (never automatic) AI feature

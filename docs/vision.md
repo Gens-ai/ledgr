@@ -56,7 +56,7 @@ Not just "point an MCP client at a URL" — a fuller integration than that:
 - Active development toward MCP protocol v2 (unmerged branch `feat/mcp-v2-readiness`, PR #42, "Prepare MCP server for protocol v2") — the maintainer is tracking the evolving spec, not treating MCP support as a one-time checkbox.
 - Separately, there's non-MCP in-app AI chat and AI categorization fallback (BYOK), which is a distinct surface from the agent/MCP interface — don't conflate the two "AI" features.
 
-## Categorization — intended design (as designed, not as fully implemented — see `gaps.md`)
+## Categorization — intended design (as designed, not as fully implemented — see `docs/planning/gaps.md`)
 
 Advertised four-tier pipeline: **your rules > merchant defaults > Plaid categories > AI fallback**. As designed in `src/lib/categorization/engine.ts` (`categorizeTransactions()`), triggered automatically after every Plaid sync (`src/lib/plaid/sync.ts:636-649`), in priority order per transaction:
 
@@ -67,7 +67,7 @@ Advertised four-tier pipeline: **your rules > merchant defaults > Plaid categori
 
 The category taxonomy itself is a **fixed, hardcoded seed list** (`src/db/seed/categories.ts`, `DEFAULT_CATEGORIES`) — 8 groups / ~34 categories (Income, Housing, Food & Dining, Transportation, Utilities, Shopping, Health, Personal), inserted once per household at creation, marked `isSystem: true`.
 
-Every categorization assignment is stamped with its `categorySource` (`rule` | `merchant_default` | `pfc` | `ai`) — so in principle you can always see *why* something was categorized the way it was, which is a real, well-designed transparency feature (assuming the sources are all actually reachable — see `gaps.md`).
+Every categorization assignment is stamped with its `categorySource` (`rule` | `merchant_default` | `pfc` | `ai`) — so in principle you can always see *why* something was categorized the way it was, which is a real, well-designed transparency feature (assuming the sources are all actually reachable — see `docs/planning/gaps.md`).
 
 ## Comparison to alternatives (from README)
 
@@ -86,7 +86,7 @@ Every categorization assignment is stamped with its `categorySource` (`rule` | `
 Done: Plaid webhook support, in-app AI chat, OFX/QFX import.
 Not done: mobile-responsive UI, multi-currency support, custom report builder, automatic transfer detection between accounts, goal tracking (savings/debt payoff), recurring budget templates.
 
-Notably **not on the public roadmap**: making the category-rules tier of the categorization pipeline actually reachable from the product, or category CRUD. See `gaps.md`.
+Notably **not on the public roadmap**: making the category-rules tier of the categorization pipeline actually reachable from the product. (Category CRUD, also missing at the time of the original evaluation, has since shipped.) See `docs/planning/gaps.md`.
 
 ## Project maturity / provenance
 
