@@ -11,7 +11,8 @@ import {
 interface AuthCardProps {
   title: string;
   description: string;
-  footer: {
+  /** Omitted when there is nowhere to send the user (e.g. sign-up disabled). */
+  footer?: {
     text: string;
     linkText: string;
     href: string;
@@ -28,17 +29,19 @@ export function AuthCard({ title, description, footer, children }: AuthCardProps
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent>{children}</CardContent>
-      <CardFooter className="justify-center">
-        <p className="text-sm text-muted-foreground">
-          {footer.text}{" "}
-          <Link
-            href={footer.href}
-            className="text-foreground underline-offset-4 hover:underline font-medium"
-          >
-            {footer.linkText}
-          </Link>
-        </p>
-      </CardFooter>
+      {footer && (
+        <CardFooter className="justify-center">
+          <p className="text-sm text-muted-foreground">
+            {footer.text}{" "}
+            <Link
+              href={footer.href}
+              className="text-foreground underline-offset-4 hover:underline font-medium"
+            >
+              {footer.linkText}
+            </Link>
+          </p>
+        </CardFooter>
+      )}
     </Card>
   );
 }

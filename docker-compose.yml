@@ -57,6 +57,7 @@ services:
       APP_DATABASE_URL: postgresql://ledgr_app:${POSTGRES_PASSWORD:-ledgr}@db:5432/ledgr
       BETTER_AUTH_URL: http://localhost:${PORT:-4200}
       NEXT_PUBLIC_APP_URL: http://localhost:${PORT:-4200}
+      LEDGR_DISABLE_SIGNUP: ${LEDGR_DISABLE_SIGNUP:-false}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]

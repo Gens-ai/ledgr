@@ -230,6 +230,7 @@ Migrations run automatically on container startup.
 | `BETTER_AUTH_SECRET` | No | auto-generated | Session secret, persisted in the app data volume. Set your own with `openssl rand -base64 32` |
 | `PORT` | No | `4200` | Host port for the app |
 | `POSTGRES_PASSWORD` | No | `ledgr` | Database password (change in production) |
+| `LEDGR_DISABLE_SIGNUP` | No | `false` | `true` refuses new sign-ups (server-side) and hides the sign-up page and links; existing users still sign in. Set it once your account exists |
 | `PLAID_CLIENT_ID` | No | -- | Plaid client ID |
 | `PLAID_SECRET` | No | -- | Plaid secret key |
 | `PLAID_ENV` | No | `production` | `production` or `sandbox` |

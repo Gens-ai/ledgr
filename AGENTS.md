@@ -249,6 +249,13 @@ below are specific to the fork; everything above is shared with upstream.
   (`src/lib/auth/provision.ts`) to create the household and default categories
   at sign-up. The demo household is self-seeded by `seedDemoHousehold()` from
   `src/app/(dashboard)/layout.tsx`.
+- **`LEDGR_DISABLE_SIGNUP=true` closes sign-up** (fork). It sets Better Auth
+  `emailAndPassword.disableSignUp` in `createAuthOptions()`
+  (`src/lib/auth/index.ts`), and `/signup` and the login page hide the form and
+  link via `isSignupDisabled()` (`src/lib/auth/signup.ts`). Server-side only —
+  never a `NEXT_PUBLIC_` var; pass it to client components as a prop. Email/password
+  is the only user-creating path today; if you add a social provider or a
+  user-creating plugin, gate it on the same flag.
 - **Demo mode** (`lib/demo-mode.ts`) gates only some write paths. Don't assume
   a mutation is demo-safe without checking.
 - **`pnpm dev:setup`** waits for Postgres with `docker compose exec db pg_isready`,

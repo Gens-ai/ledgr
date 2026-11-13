@@ -45,7 +45,7 @@ the architecture/style docs).
 - **Login is email + password (min 8 chars) or passkey; no 2FA/TOTP.** Passkeys bind to the `BETTER_AUTH_URL` host. **Source:** `src/lib/auth/index.ts:11-30`
 - **Sessions last 7 days, refreshed at most once a day.** **Source:** `src/lib/auth/index.ts:36`
 - **Everything requires login except an explicit public allowlist** (login, signup, `/api/auth`, `/api/health`, Plaid OAuth return + webhook, `.well-known`, `/api/mcp`, manifest, robots, `/privacy`). **Why:** matcher kept narrow so no route is exempted by accident. **Source:** `src/proxy.ts:3-28`
-- ⟲ **Sign-up will be switchable off with a `LEDGR_DISABLE_SIGNUP` env flag (Better Auth `disableSignUp` + hide `/signup`); the theforest deploy turns it on once the owner account exists. (fork, planned — not built yet)** **Why:** otherwise any tailnet device can create an account. 2026-11-06. **Source:** Network repo `projects/ledgr.md` Phase 5
+- ⟲ **Sign-up is switchable off with `LEDGR_DISABLE_SIGNUP=true` (fork): Better Auth `disableSignUp` refuses email/password sign-up server-side (the only user-creating path; passkey registration already needs a session), `/signup` shows "Sign-up is disabled on this instance" instead of the form, and the login page drops its "Sign up" link. Existing users still sign in with password or passkey. Unset/anything else = open. Read server-side only, per request. The theforest deploy turns it on once the owner account exists.** **Why:** otherwise any tailnet device can create an account. 2026-11-13. **Source:** `src/lib/auth/index.ts:44`, `src/lib/auth/signup.ts:10`, `src/app/(auth)/signup/page.tsx:11`
 - **Auth error messages are deliberately short; detail goes to the server console.** **Source:** `src/components/auth/signup-form.tsx:41-45`
 
 ## Privacy & safety
@@ -146,7 +146,6 @@ above and delete it here.
 
 **Contradicts a recorded decision**
 
-- Sign-up is always open to anyone who can reach the instance; there is no switch (`src/lib/auth/index.ts:25`) — contradicts the planned `LEDGR_DISABLE_SIGNUP` rule. Blocks the theforest go-live.
 - The Transactions-page summary uses its own rule: expenses don't exclude income categories, and income uses only `isTransfer=false` (`src/queries/transactions.ts:292-293`) — contradicts the shared income/expense rule.
 - Drill-down from the Total Income tile uses the category-based `incomeBaseConditions`, so it won't sum to the sign-based tile; comments at `src/lib/spending-helpers.ts:51` and `src/queries/reports.ts:312` are stale.
 - Deleting a system category silently stops Plaid auto-categorization for its seed key, since nothing re-seeds it (`src/lib/categorization/engine.ts:111-122`) — worth a warning in the delete dialog.

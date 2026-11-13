@@ -29,6 +29,9 @@ const eslintConfig = defineConfig([
     // CI starts from a clean checkout, so this is invisible there and constant
     // locally, which is the worst way round.
     ".claude/worktrees/**",
+    // GitNexus code-index tooling (gitignored); its run.cjs launcher is
+    // CommonJS and not ours to lint.
+    ".gitnexus/**",
   ]),
 ]);
 
