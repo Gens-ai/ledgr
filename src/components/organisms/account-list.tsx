@@ -262,10 +262,16 @@ export function AccountList({ groups }: AccountListProps) {
       </div>
       )}
 
-      <EditAccountDialog
-        account={editingAccount}
-        onClose={() => setEditingAccount(null)}
-      />
+      {/* Mounted per edit and keyed by id: the dialog seeds its form state
+          from `account` once, so a long-lived instance kept the previous
+          account's (or an empty) name. */}
+      {editingAccount && (
+        <EditAccountDialog
+          key={editingAccount.id}
+          account={editingAccount}
+          onClose={() => setEditingAccount(null)}
+        />
+      )}
     </>
   );
 }
