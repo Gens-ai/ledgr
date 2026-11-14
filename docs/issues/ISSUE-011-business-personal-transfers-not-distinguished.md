@@ -1,8 +1,9 @@
 ---
 id: ISSUE-011
 title: Business-to-personal transfers are excluded from income like any other transfer
-status: open
+status: resolved
 created: 2026-08-21
+resolved: 2026-11-14
 ---
 
 ## Summary
@@ -56,3 +57,34 @@ just categorization.
   transfer as income/expense despite the isTransfer flag."
 - Something folded into the rule-engine work referenced above, if that
   engine is extended to also touch `isTransfer`.
+
+## Resolution
+
+- **2026-11-14:** Decided (see `docs/product-decisions.md`, Transactions &
+  income): personal vs business is separated by category group, and an owner's
+  draw is marked by its *category*, not by tagging accounts. New category flag
+  `include_transfer_credits_as_income` (migration
+  `0016_category_transfer_credits_income`), set from the category's edit dialog
+  ("Count incoming transfers as income"); custom, non-income categories only,
+  and mutually exclusive with `include_transfer_in_spending`.
+- For a transfer filed under a flagged category (e.g. "Owner's Draw"), the
+  **credit** leg counts as income in every income/expense *total* — dashboard
+  tiles, Cash Flow, Reports Total Income/Expenses tiles, Safe to Spend, MCP
+  `get_dashboard_summary` / `get_income_vs_expense`, AI chat
+  `getMonthlyTrends` — via `includedInIncomeTotals()` in
+  `src/queries/shared-conditions.ts`, which those queries now use in place of
+  `includedInSpending()`. The **debit** leg on the business account stays
+  excluded everywhere, so a draw is never a business expense. Brokerage
+  (`investment_account`) rows never qualify.
+- This addresses the "important technical note" above: the override is part
+  of the transfer row filter itself, not a categorization-only change.
+- `getDashboardSummary`'s inconsistency described above is already gone: it
+  has excluded transfers through `includedInSpending()` since the
+  2026-11-12 income-totals unification (ISSUE-010 follow-up), and now uses
+  `includedInIncomeTotals()` like the other totals.
+- Not changed: per-category views (Spending tab, Income vs Expense category
+  table, Sankey) keep the plain transfer exclusion, so the draw does not
+  appear there as a category row. A draw that transfer detection missed (not
+  `isTransfer`) is an ordinary row: its credit is income by the sign rule,
+  but its debit would count as an expense until it is marked a transfer.
+- Tests: `tests/integration/owners-draw-income.test.ts`.

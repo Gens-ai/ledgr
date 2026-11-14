@@ -8,7 +8,7 @@ import {
 } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
 import { notDeleted, notHidden } from "@/lib/query-helpers";
-import { includedInSpending, incomeTotalsRule } from "@/queries/shared-conditions";
+import { includedInIncomeTotals, incomeTotalsRule } from "@/queries/shared-conditions";
 import { aggregateSpending, enrichSpendingMap } from "@/lib/spending-helpers";
 import type { ReportFilters } from "@/queries/reports";
 import { classifyAccountType } from "@/lib/account-utils";
@@ -107,7 +107,7 @@ export async function getDashboardSummary(
         gte(transactions.date, dateFrom),
         lte(transactions.date, dateTo),
         eq(transactions.pending, false),
-        await includedInSpending(householdId, db),
+        await includedInIncomeTotals(householdId, db),
       )
     );
 
@@ -371,7 +371,7 @@ export async function getCashFlow(
         notHidden(transactions),
         dateFrom ? gte(transactions.date, dateFrom) : undefined,
         eq(transactions.pending, false),
-        await includedInSpending(householdId, db),
+        await includedInIncomeTotals(householdId, db),
       )
     )
     .groupBy(monthExpr)

@@ -236,11 +236,33 @@ below are specific to the fork; everything above is shared with upstream.
   `getMonthlyTrends` — goes through `incomeTotalsRule()` in
   `src/queries/shared-conditions.ts`: credits are income; expenses are debits
   outside income categories (`notIncome`), matching the Spending tab; transfers
-  excluded via `includedInSpending`. Refunds counting as income is
+  excluded via `includedInIncomeTotals` (= `includedInSpending` plus
+  owner's-draw credits, below). Refunds counting as income is
   accepted. Per-category views (`notIncome`/`aggregateSpending`, the Income vs
   Expense category table, the Sankey) stay on category classification by
   design. Upstream's report-queries test "table income rows sum to the Total
   Income tile…" was rewritten for this; keep the fork version on merges.
+- **Owner's draw (ISSUE-011, 2026-11-14).** `categories.include_transfer_credits_as_income`
+  ("Count incoming transfers as income", category edit dialog): the credit leg
+  of a transfer in such a category counts as income in totals
+  (`includedInIncomeTotals`); its debit leg stays excluded from spending
+  everywhere. Custom non-income categories only, mutually exclusive with
+  `include_transfer_in_spending` (the setters clear the other flag and
+  `getTransferReportingCategoryIds` backstops a hand-edited row).
+- **Business vs personal is by category group** — no category "type" field.
+  Reports and Transactions take a group filter (`groups=a,b&groupMode=exclude`
+  URL params; `lib/group-filter.ts` + `queries/group-filter.ts`
+  `resolveGroupFilter`), applied wherever the category filter is; include mode
+  drops uncategorized rows, exclude mode keeps them. The dashboard is never
+  group-filtered. Reports also has a tax-year export
+  (`/api/export/tax-year?year=&kind=totals|transactions`, `queries/tax-export.ts`)
+  using the totals rules, with splits attributed per split category.
+- **Account-scoped rules.** `category_rules.account_id` (nullable, cascade):
+  such a rule only matches that account, may have an empty pattern (catch-all
+  for the account), and is evaluated before general rules. A general rule with
+  an empty pattern is refused by the action and skipped by the engine.
+- **CSV exports go through `lib/csv.ts`** (`csvEscape` neutralises leading
+  `= + - @` tab/CR against CSV formula injection; `csvCents` for money).
 - **PFC mapping keys off `categories.pfc_seed_key`, never the name.** It holds
   the category's original seed name, set at seed time and never edited
   (migration 0014 backfilled it). `pfc-map.ts` values are seed keys. Anything

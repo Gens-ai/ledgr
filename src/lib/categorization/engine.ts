@@ -8,6 +8,8 @@ import { PFC_DETAILED_TO_CATEGORY } from "./pfc-map";
 
 export interface CategorizableTransaction {
   id: string;
+  /** Needed for account-scoped rules; a transaction without one only meets general rules. */
+  accountId?: string | null;
   name: string;
   merchantId: string | null;
   merchantName: string | null;
@@ -21,6 +23,8 @@ export interface CategoryRule {
   matchField: "name" | "merchant";
   matchPattern: string;
   priority: number;
+  /** Fork: limits the rule to one account. Null/absent = every account. */
+  accountId?: string | null;
 }
 
 export interface CategoryAssignment {
@@ -34,9 +38,13 @@ export function categorizeTransactions(
   rules: CategoryRule[],
   pfcCategoryMap: Map<string, string> = new Map(),
 ): CategoryAssignment[] {
-  // Lowercase each rule's pattern once (R work) rather than per transaction.
+  // Account-scoped rules first (fork), then priority descending within each
+  // tier. Lowercase each rule's pattern once (R work) rather than per
+  // transaction. A general rule with an empty pattern would match the whole
+  // feed — the action refuses to create one, and this drops a hand-edited row.
   const sorted = [...rules]
-    .sort((a, b) => b.priority - a.priority)
+    .filter((rule) => rule.accountId || rule.matchPattern.length > 0)
+    .sort((a, b) => Number(!!b.accountId) - Number(!!a.accountId) || b.priority - a.priority)
     .map((rule) => ({ ...rule, patternLower: rule.matchPattern.toLowerCase() }));
   const assignments: CategoryAssignment[] = [];
 
@@ -47,10 +55,13 @@ export function categorizeTransactions(
     const merchantLower = txn.merchantName?.toLowerCase() ?? null;
 
     for (const rule of sorted) {
+      if (rule.accountId && rule.accountId !== txn.accountId) continue;
+      // An account rule with no pattern is a catch-all for that account.
+      const catchAll = rule.accountId && rule.patternLower.length === 0;
       const target = rule.matchField === "merchant" ? merchantLower : nameLower;
-      if (!target) continue;
+      if (!catchAll && !target) continue;
 
-      if (target.includes(rule.patternLower)) {
+      if (catchAll || target!.includes(rule.patternLower)) {
         assignments.push({
           transactionId: txn.id,
           categoryId: rule.categoryId,
@@ -108,6 +119,7 @@ async function doCategorizeSyncedTransactions(
       matchField: categoryRules.matchField,
       matchPattern: categoryRules.matchPattern,
       priority: categoryRules.priority,
+      accountId: categoryRules.accountId,
     })
     .from(categoryRules)
     .where(scoped.where(categoryRules)) as CategoryRule[];
@@ -147,6 +159,7 @@ async function doCategorizeSyncedTransactions(
   const uncategorized = await db
     .select({
       id: transactions.id,
+      accountId: transactions.accountId,
       name: transactions.name,
       merchantId: transactions.merchantId,
       pfcDetailed: transactions.pfcDetailed,
@@ -181,6 +194,7 @@ async function doCategorizeSyncedTransactions(
     const merchant = txn.merchantId ? merchantMap.get(txn.merchantId) : undefined;
     return {
       id: txn.id,
+      accountId: txn.accountId,
       name: txn.name,
       merchantId: txn.merchantId,
       merchantName: merchant?.name ?? null,

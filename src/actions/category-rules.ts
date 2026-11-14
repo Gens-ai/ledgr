@@ -5,28 +5,44 @@ import { revalidatePath } from "next/cache";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { db as defaultDb, type LedgrDb } from "@/db";
-import { categoryRules, categories } from "@/db/schema";
+import { categoryRules, categories, accounts } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
 import { authorizeAction } from "@/lib/auth/authorize-action";
-import { normalizeRulePattern } from "@/lib/categorization/rule-pattern";
+import { normalizeRulePatternForScope } from "@/lib/categorization/rule-pattern";
+import { notDeleted } from "@/lib/query-helpers";
 
 type ActionResult = { success: true } | { error: string };
 
-// Pattern validity lives in normalizeRulePattern, which explains why an empty
-// pattern is dangerous and is unit-tested without a database.
-const ruleInputSchema = z.object({
-  categoryId: z.string().min(1),
-  matchField: z.enum(["name", "merchant"]),
-  matchPattern: z
-    .string()
-    .transform(normalizeRulePattern)
-    .refine((p): p is string => p !== null, { message: "Enter a pattern to match on." }),
-  priority: z.number().int().min(0).max(999),
-});
+// Pattern validity lives in normalizeRulePatternForScope, which explains why an
+// empty pattern is dangerous — and why one is allowed on a rule limited to a
+// single account (a catch-all for it) — and is unit-tested without a database.
+const PATTERN_REQUIRED = "Enter a pattern to match on.";
+const ruleInputSchema = z
+  .object({
+    categoryId: z.string().min(1),
+    matchField: z.enum(["name", "merchant"]),
+    matchPattern: z.string(),
+    priority: z.number().int().min(0).max(999),
+    /** Fork: limit the rule to one account; null/absent = every account. */
+    accountId: z.string().min(1).nullable().optional(),
+  })
+  .transform((input, ctx) => {
+    const accountId = input.accountId ?? null;
+    const matchPattern = normalizeRulePatternForScope(input.matchPattern, {
+      accountScoped: accountId !== null,
+    });
+    if (matchPattern === null) {
+      ctx.addIssue({ code: "custom", message: PATTERN_REQUIRED });
+      return z.NEVER;
+    }
+    return { ...input, matchPattern, accountId };
+  });
 
 export type CategoryRuleInput = z.input<typeof ruleInputSchema>;
 
-const updateInputSchema = ruleInputSchema.extend({ id: z.string().min(1) });
+const updateInputSchema = z
+  .object({ id: z.string().min(1) })
+  .and(ruleInputSchema);
 export type CategoryRuleUpdateInput = z.input<typeof updateInputSchema>;
 
 /**
@@ -34,6 +50,24 @@ export type CategoryRuleUpdateInput = z.input<typeof updateInputSchema>;
  * household. Without this check a caller could aim a rule at another
  * household's category id and read its name back off the rules list.
  */
+/**
+ * Same reasoning for an account-scoped rule: the account must be the
+ * household's own, and not a removed one.
+ */
+async function accountBelongsToHousehold(
+  householdId: string,
+  accountId: string,
+  db: LedgrDb,
+): Promise<boolean> {
+  const scoped = scopedQuery(householdId, db);
+  const [row] = await db
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(scoped.where(accounts, eq(accounts.id, accountId), notDeleted(accounts)))
+    .limit(1);
+  return !!row;
+}
+
 async function categoryBelongsToHousehold(
   householdId: string,
   categoryId: string,
@@ -54,10 +88,13 @@ export async function createCategoryRuleScoped(
   db: LedgrDb = defaultDb,
 ): Promise<ActionResult> {
   const parsed = ruleInputSchema.safeParse(input);
-  if (!parsed.success) return { error: "Enter a pattern to match on." };
+  if (!parsed.success) return { error: PATTERN_REQUIRED };
 
   if (!(await categoryBelongsToHousehold(householdId, parsed.data.categoryId, db))) {
     return { error: "Category not found" };
+  }
+  if (parsed.data.accountId && !(await accountBelongsToHousehold(householdId, parsed.data.accountId, db))) {
+    return { error: "Account not found" };
   }
 
   await db.insert(categoryRules).values({
@@ -67,9 +104,10 @@ export async function createCategoryRuleScoped(
     matchField: parsed.data.matchField,
     matchPattern: parsed.data.matchPattern,
     priority: parsed.data.priority,
+    accountId: parsed.data.accountId,
   });
 
-  revalidatePath("/settings/rules");
+  revalidatePath("/rules");
   return { success: true };
 }
 
@@ -88,10 +126,13 @@ export async function updateCategoryRuleScoped(
   db: LedgrDb = defaultDb,
 ): Promise<ActionResult> {
   const parsed = updateInputSchema.safeParse(input);
-  if (!parsed.success) return { error: "Enter a pattern to match on." };
+  if (!parsed.success) return { error: PATTERN_REQUIRED };
 
   if (!(await categoryBelongsToHousehold(householdId, parsed.data.categoryId, db))) {
     return { error: "Category not found" };
+  }
+  if (parsed.data.accountId && !(await accountBelongsToHousehold(householdId, parsed.data.accountId, db))) {
+    return { error: "Account not found" };
   }
 
   const scoped = scopedQuery(householdId, db);
@@ -102,13 +143,14 @@ export async function updateCategoryRuleScoped(
       matchField: parsed.data.matchField,
       matchPattern: parsed.data.matchPattern,
       priority: parsed.data.priority,
+      accountId: parsed.data.accountId,
     })
     .where(scoped.where(categoryRules, eq(categoryRules.id, parsed.data.id)))
     .returning({ id: categoryRules.id });
 
   if (updated.length === 0) return { error: "Rule not found" };
 
-  revalidatePath("/settings/rules");
+  revalidatePath("/rules");
   return { success: true };
 }
 
@@ -137,7 +179,7 @@ export async function deleteCategoryRuleScoped(
 
   if (deleted.length === 0) return { error: "Rule not found" };
 
-  revalidatePath("/settings/rules");
+  revalidatePath("/rules");
   return { success: true };
 }
 

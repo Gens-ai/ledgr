@@ -65,3 +65,28 @@ describe("buildCsvString", () => {
     expect(buffer[2]).toBe(0xbf);
   });
 });
+
+describe("buildCsvString — category groups and CSV injection (fork)", () => {
+  test("honours the group filter like the Transactions list", async () => {
+    const { buildCsvString } = await import("../../src/app/api/export/transactions/route");
+    const { groupId: bizGroup } = await insertCategoryGroup(db, householdId, { name: "Business" });
+    const { categoryId: bizCat } = await insertCategory(db, householdId, bizGroup, { name: "Software" });
+    await insertTransaction(db, householdId, accountId, {
+      date: "2026-05-02",
+      normalizedAmount: -999,
+      amount: 999,
+      categoryId: bizCat,
+      name: "=HYPERLINK(\"http://evil\")",
+    });
+
+    const only = await buildCsvString(householdId, { groups: bizGroup }, db);
+    const onlyRows = only.split("\n").filter((l) => l.trim().length > 0);
+    expect(onlyRows).toHaveLength(2);
+    // The formula is neutralised, not exported live.
+    expect(onlyRows[1]).toContain(`'=HYPERLINK`);
+
+    const except = await buildCsvString(householdId, { groups: bizGroup, groupMode: "exclude" }, db);
+    expect(except).not.toContain("HYPERLINK");
+    expect(except).toContain("Test Store");
+  });
+});

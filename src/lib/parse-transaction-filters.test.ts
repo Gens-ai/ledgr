@@ -66,3 +66,17 @@ describe("parseTransactionFilters", () => {
     expect(filters.reviewed).toBeUndefined();
   });
 });
+
+describe("parseTransactionFilters — category groups", () => {
+  it("reads the groups and groupMode params", () => {
+    const { filters } = parseTransactionFilters({ groups: "g-1,g-2", groupMode: "exclude" });
+    expect(filters.groupIds).toEqual(["g-1", "g-2"]);
+    expect(filters.groupMode).toBe("exclude");
+  });
+
+  it("leaves the group filter unset without a groups param", () => {
+    const { filters } = parseTransactionFilters({ groupMode: "exclude" });
+    expect(filters.groupIds).toBeUndefined();
+    expect(filters.groupMode).toBeUndefined();
+  });
+});

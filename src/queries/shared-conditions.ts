@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { and, eq, inArray, isNull, lt, or, sql, notInArray } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, or, sql, notInArray } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { LedgrDb } from "@/db";
 import { transactions, categories } from "@/db/schema";
@@ -43,8 +43,9 @@ export async function notIncome(householdId: string, db: LedgrDb): Promise<SQL> 
  * tab's rule (`spendingBaseConditions` via `notIncome`), so a payroll
  * correction filed under an income category is not an expense anywhere.
  *
- * Callers supply the row filter (settled, not hidden, `includedInSpending` for
- * the transfer exclusion). Per-category breakdowns (spending reports via
+ * Callers supply the row filter (settled, not hidden, and
+ * `includedInIncomeTotals` for the transfer exclusion — which also admits an
+ * owner's-draw credit, ISSUE-011). Per-category breakdowns (spending reports via
  * `notIncome`, the Income vs Expense category table, the Sankey) stay on
  * category classification by design.
  */
@@ -61,7 +62,10 @@ export async function incomeTotalsRule(
 /**
  * Custom, non-income categories whose transfers the user counts as spending.
  * System categories can never opt in (the action refuses, and this filter
- * backstops a hand-edited row).
+ * backstops a hand-edited row). Nor can a category that counts its transfer
+ * credits as income (fork, ISSUE-011): that flag promises the outgoing leg of
+ * an owner's draw is never spending, so it wins over a hand-edited row with
+ * both set.
  */
 export const getTransferReportingCategoryIds = cache(
   async (householdId: string, db: LedgrDb): Promise<string[]> => {
@@ -73,6 +77,32 @@ export const getTransferReportingCategoryIds = cache(
         scoped.where(
           categories,
           eq(categories.includeTransferInSpending, true),
+          eq(categories.includeTransferCreditsAsIncome, false),
+          eq(categories.isIncome, false),
+          eq(categories.isSystem, false),
+        ),
+      );
+    return rows.map((row) => row.id);
+  },
+);
+
+/**
+ * Custom, non-income categories whose incoming transfers count as income
+ * (fork, ISSUE-011) — "Owner's Draw": money moved from a business account into
+ * a personal one is real personal income. Same eligibility as
+ * `getTransferReportingCategoryIds`: system and income categories can never
+ * qualify (the action refuses; this backstops a hand-edited row).
+ */
+export const getTransferIncomeCategoryIds = cache(
+  async (householdId: string, db: LedgrDb): Promise<string[]> => {
+    const scoped = scopedQuery(householdId, db);
+    const rows = await db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(
+        scoped.where(
+          categories,
+          eq(categories.includeTransferCreditsAsIncome, true),
           eq(categories.isIncome, false),
           eq(categories.isSystem, false),
         ),
@@ -118,6 +148,41 @@ export async function includedInSpending(householdId: string, db: LedgrDb): Prom
     and(
       eq(transactions.isTransfer, true),
       lt(transactions.normalizedAmount, 0),
+      sql`${transactions.transferSource} IS DISTINCT FROM 'investment_account'`,
+      inArray(transactions.categoryId, categoryIds),
+    ),
+  )!;
+}
+
+/**
+ * The row filter for income/expense TOTALS (fork, ISSUE-011): everything
+ * `includedInSpending` admits, plus the *incoming* leg of a transfer whose
+ * category counts transfer credits as income (an owner's draw landing in a
+ * personal account). Pair it with `incomeTotalsRule`: the extra rows are all
+ * credits, so they can only ever land on the income side.
+ *
+ * Deliberate limits, mirroring `includedInSpending`:
+ * - Only credits. The draw's outgoing leg on the business account stays
+ *   excluded, so a draw is never a business expense or deduction.
+ * - `investment_account` rows are never re-included.
+ * - Pairing is not consulted: each leg is judged on its own category.
+ *
+ * Per-category views (the Spending tab, the Income vs Expense category table,
+ * the Sankey) keep `includedInSpending`; the draw is a total-income figure,
+ * not an income category.
+ */
+export async function includedInIncomeTotals(householdId: string, db: LedgrDb): Promise<SQL> {
+  const [spending, categoryIds] = await Promise.all([
+    includedInSpending(householdId, db),
+    getTransferIncomeCategoryIds(householdId, db),
+  ]);
+  if (categoryIds.length === 0) return spending;
+
+  return or(
+    spending,
+    and(
+      eq(transactions.isTransfer, true),
+      gt(transactions.normalizedAmount, 0),
       sql`${transactions.transferSource} IS DISTINCT FROM 'investment_account'`,
       inArray(transactions.categoryId, categoryIds),
     ),

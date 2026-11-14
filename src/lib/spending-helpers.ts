@@ -11,6 +11,7 @@ import { notDeleted, notHidden, sumAbs, sumCol } from "@/lib/query-helpers";
 import { UNCATEGORIZED, resolvedCategoryLabel } from "@/lib/labels";
 import { getIncomeCategoryIds, includedInSpending, notIncome } from "@/queries/shared-conditions";
 import type { ReportFilters } from "@/queries/reports";
+import { resolveGroupFilter } from "@/queries/group-filter";
 
 export interface SpendingChartItem {
   id: string | null;
@@ -109,6 +110,11 @@ export async function aggregateSpending(
       inArray(transactions.categoryId, filters.categoryIds),
     ];
   }
+  // Category-group filter (fork): non-split rows by their own category, split
+  // rows by each split's category — the same way categoryIds applies.
+  const groupFilter = await resolveGroupFilter(householdId, filters, db);
+  const groupCondition = groupFilter.condition(transactions.categoryId);
+  if (groupCondition) nonSplitConditions = [...nonSplitConditions, groupCondition];
 
   const nonSplitRows = await db
     .select({
@@ -134,12 +140,13 @@ export async function aggregateSpending(
       })
       .from(transactionSplits)
       .where(
-        filters.categoryIds?.length
-          ? and(
-              inArray(transactionSplits.transactionId, splitParentIds),
-              inArray(transactionSplits.categoryId, filters.categoryIds),
-            )
-          : inArray(transactionSplits.transactionId, splitParentIds),
+        and(
+          inArray(transactionSplits.transactionId, splitParentIds),
+          filters.categoryIds?.length
+            ? inArray(transactionSplits.categoryId, filters.categoryIds)
+            : undefined,
+          groupFilter.condition(transactionSplits.categoryId),
+        ),
       )
       .groupBy(transactionSplits.categoryId);
 

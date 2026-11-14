@@ -12,11 +12,14 @@ import { scopedQuery } from "@/lib/scoped-query";
 import { notDeleted, notHidden, sumAbs, sumCol, countRows } from "@/lib/query-helpers";
 import {
   getIncomeCategoryIds,
+  includedInIncomeTotals,
   includedInSpending,
   incomeTotalsRule,
   notIncome,
 } from "@/queries/shared-conditions";
 import { classifyAccountType } from "@/lib/account-utils";
+import { resolveGroupFilter } from "@/queries/group-filter";
+import type { GroupFilter } from "@/lib/group-filter";
 import { resolvedCategoryLabel, UNCATEGORIZED } from "@/lib/labels";
 import {
   aggregateSpending,
@@ -29,11 +32,13 @@ import type { NetWorthPoint } from "@/queries/dashboard";
 import { getCurrentMonth, monthBounds, monthsSpanned } from "@/lib/date-utils";
 import type { SankeyNode, SankeyLink } from "@/components/organisms/sankey-chart";
 
-export interface ReportFilters {
+export interface ReportFilters extends GroupFilter {
   dateFrom: string;
   dateTo: string;
   accountIds?: string[];
   categoryIds?: string[];
+  // groupIds / groupMode (GroupFilter, fork 2026-11-14): applied wherever
+  // categoryIds is — see lib/group-filter.ts for the uncategorized rule.
 }
 
 export interface SpendingRow {
@@ -104,7 +109,8 @@ export async function getIncomeVsExpense(
     notDeleted(transactions),
     notHidden(transactions),
     eq(transactions.pending, false),
-    await includedInSpending(householdId, db),
+    // Totals: owner's-draw credits count as income (ISSUE-011).
+    await includedInIncomeTotals(householdId, db),
     gte(transactions.date, filters.dateFrom),
     lte(transactions.date, filters.dateTo),
   ];
@@ -115,6 +121,9 @@ export async function getIncomeVsExpense(
   if (filters.categoryIds?.length) {
     conditions.push(inArray(transactions.categoryId, filters.categoryIds));
   }
+  const groupFilter = await resolveGroupFilter(householdId, filters, db);
+  const groupCondition = groupFilter.condition(transactions.categoryId);
+  if (groupCondition) conditions.push(groupCondition);
 
   // Fork (2026-11-12): the shared, sign-based income-totals rule
   // (shared-conditions.ts) — credits are income, debits outside income
@@ -167,6 +176,9 @@ export async function getCategoryTrends(
   if (filters.categoryIds?.length) {
     conditions.push(inArray(transactions.categoryId, filters.categoryIds));
   }
+  const groupFilter = await resolveGroupFilter(householdId, filters, db);
+  const groupCondition = groupFilter.condition(transactions.categoryId);
+  if (groupCondition) conditions.push(groupCondition);
 
   const splitParentRows = await db
     .select({ transactionId: transactionSplits.transactionId })
@@ -223,6 +235,7 @@ export async function getCategoryTrends(
       const month = dateMap.get(row.transactionId);
       if (!month) continue;
       if (filters.categoryIds?.length && !filters.categoryIds.includes(row.categoryId)) continue;
+      if (!groupFilter.matches(row.categoryId)) continue;
       const key = `${month}|${row.categoryId}`;
       trendMap.set(key, (trendMap.get(key) ?? 0) + row.amount);
     }
@@ -288,6 +301,9 @@ export async function getIncomeExpenseByCategory(
   if (filters.categoryIds?.length) {
     conditions.push(inArray(transactions.categoryId, filters.categoryIds));
   }
+  const groupFilter = await resolveGroupFilter(householdId, filters, db);
+  const groupCondition = groupFilter.condition(transactions.categoryId);
+  if (groupCondition) conditions.push(groupCondition);
 
   // Divisor is the span from the later of filters.dateFrom and the earliest
   // matching transaction date, through filters.dateTo — in average months, via
@@ -587,6 +603,9 @@ export async function getCashFlowSankey(
   if (filters.categoryIds?.length) {
     conditions.push(inArray(transactions.categoryId, filters.categoryIds));
   }
+  const groupFilter = await resolveGroupFilter(householdId, filters, db);
+  const groupCondition = groupFilter.condition(transactions.categoryId);
+  if (groupCondition) conditions.push(groupCondition);
 
   const incomeMap = new Map<string, { name: string; total: number }>();
   const expenseMap = new Map<string, { name: string; total: number }>();
@@ -762,8 +781,9 @@ export async function getSafeToSpend(
         notHidden(transactions),
         gte(transactions.date, dateFrom),
         lte(transactions.date, dateTo),
-        eq(transactions.isTransfer, false),
-        isNull(transactions.transferPairId),
+        // The totals transfer exclusion, so an owner's-draw credit counts
+        // (ISSUE-011); incomeRule keeps it to credits.
+        await includedInIncomeTotals(householdId, db),
         incomeRule,
       ),
     );

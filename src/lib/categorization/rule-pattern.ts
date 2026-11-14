@@ -29,3 +29,18 @@ export function normalizeRulePattern(raw: string): string | null {
   if (trimmed.length > MAX_RULE_PATTERN_LENGTH) return null;
   return trimmed;
 }
+
+/**
+ * Fork: `normalizeRulePattern`, except that a rule limited to one account may
+ * have an empty pattern — a catch-all for that account ("everything on the LLC
+ * card is Business"). The danger above is an empty pattern matching the whole
+ * feed; scoped to one account it matches exactly what the user asked for.
+ * Returns "" for that case, never null.
+ */
+export function normalizeRulePatternForScope(
+  raw: string,
+  { accountScoped }: { accountScoped: boolean },
+): string | null {
+  if (accountScoped && raw.trim().length === 0) return "";
+  return normalizeRulePattern(raw);
+}

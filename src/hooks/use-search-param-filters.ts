@@ -7,6 +7,8 @@ import { todayDateString } from "@/lib/date-utils";
 const FILTER_KEYS = [
   "q", "account", "category", "from", "to",
   "reviewed", "type", "amountMin", "amountMax",
+  // Reports' multi-selects, and the category-group filter both pages share.
+  "accounts", "categories", "groups", "groupMode",
 ];
 
 export function useSearchParamFilters() {

@@ -8,11 +8,13 @@ import { aggregateSpending } from "@/lib/spending-helpers";
 import { buildCategoryColorMap } from "@/lib/category-colors";
 import { rangeToDateBounds, shiftDateRange, comparisonLabel } from "@/lib/date-utils";
 import { resolveReportDateSelection, DEFAULT_REPORT_PRESET } from "@/lib/report-date-selection";
+import { parseGroupFilterParams } from "@/lib/group-filter";
 import { ReportFilterBar } from "@/components/organisms/report-filter-bar";
 import { ReportTabs } from "@/components/organisms/report-tabs";
 import { ReportPanel, type ReportContext, type ReportTab } from "@/components/organisms/report-panels";
 import { ReportPanelSkeleton } from "@/components/organisms/report-panel-skeleton";
 import { SavedReportPicker } from "@/components/organisms/saved-report-picker";
+import { TaxExportButton } from "@/components/organisms/tax-export-button";
 import { getSavedReportsByHousehold } from "@/queries/saved-reports";
 
 const VALID_TABS = new Set<string>(["spending", "income-expense", "cash-flow", "trends", "net-worth"]);
@@ -50,7 +52,12 @@ export default async function ReportsPage({
   const accountIds = typeof params.accounts === "string" ? params.accounts.split(",").filter(Boolean) : undefined;
   const categoryIds = typeof params.categories === "string" ? params.categories.split(",").filter(Boolean) : undefined;
 
-  const filters: ReportFilters = { dateFrom, dateTo, accountIds, categoryIds };
+  const groupFilter = parseGroupFilterParams(
+    typeof params.groups === "string" ? params.groups : undefined,
+    typeof params.groupMode === "string" ? params.groupMode : undefined,
+  );
+
+  const filters: ReportFilters = { dateFrom, dateTo, accountIds, categoryIds, ...groupFilter };
 
   // Comparison period
   let compLabel: string | null = null;
@@ -67,10 +74,10 @@ export default async function ReportsPage({
     getReportFilterAccounts(householdId),
     getSavedReportsByHousehold(householdId),
     // One spend ranking for the range colours every tab, so a category keeps
-    // its colour from Spending to Cash Flow to Trends. The category filter is
-    // left out so narrowing to a few categories doesn't recolour them.
+    // its colour from Spending to Cash Flow to Trends. The category and group
+    // filters are left out so narrowing to a few categories doesn't recolour them.
     withHousehold(householdId, (tx) =>
-      aggregateSpending(householdId, { ...filters, categoryIds: undefined }, tx),
+      aggregateSpending(householdId, { ...filters, categoryIds: undefined, groupIds: undefined }, tx),
     ),
   ]);
 
@@ -85,7 +92,15 @@ export default async function ReportsPage({
 
   // Keyed on the tab and every filter, so any change streams a fresh panel
   // behind the skeleton instead of leaving stale figures under new filters.
-  const panelKey = [tab, dateFrom, dateTo, accountIds?.join(","), categoryIds?.join(",")].join("|");
+  const panelKey = [
+    tab,
+    dateFrom,
+    dateTo,
+    accountIds?.join(","),
+    categoryIds?.join(","),
+    groupFilter.groupIds?.join(","),
+    groupFilter.groupMode,
+  ].join("|");
 
   return (
     <div className="space-y-4">
@@ -93,7 +108,13 @@ export default async function ReportsPage({
 
       <div className="flex items-start justify-between gap-2">
         <ReportFilterBar accounts={filterAccounts} categories={allCategories} />
-        <SavedReportPicker reports={savedReports} activeTab={tab} />
+        <div className="flex shrink-0 items-center gap-2">
+          <TaxExportButton
+            groups={allCategories.map((g) => ({ id: g.id, name: g.name }))}
+            currentYear={new Date().getFullYear()}
+          />
+          <SavedReportPicker reports={savedReports} activeTab={tab} />
+        </div>
       </div>
 
       <ReportTabs activeTab={tab}>

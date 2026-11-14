@@ -1,0 +1,1 @@
+ALTER TABLE "categories" ADD COLUMN "include_transfer_credits_as_income" boolean DEFAULT false NOT NULL;

@@ -19,6 +19,8 @@ interface CategoryOption {
   icon: string | null;
   isIncome: boolean;
   includeTransferInSpending: boolean;
+  /** Fork (ISSUE-011): incoming transfers in this category count as income. */
+  includeTransferCreditsAsIncome: boolean;
   isSystem: boolean;
   sortOrder: number;
 }
@@ -59,6 +61,7 @@ export async function getCategories(
       icon: cat.icon,
       isIncome: cat.isIncome ?? false,
       includeTransferInSpending: cat.includeTransferInSpending ?? false,
+      includeTransferCreditsAsIncome: cat.includeTransferCreditsAsIncome ?? false,
       isSystem: cat.isSystem ?? false,
       sortOrder: cat.sortOrder ?? 0,
     });

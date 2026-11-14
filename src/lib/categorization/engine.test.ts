@@ -196,3 +196,69 @@ describe("categorizeTransactions", () => {
     expect(result).toHaveLength(0);
   });
 });
+
+describe("categorizeTransactions — account-scoped rules", () => {
+  it("only applies an account rule to transactions on that account", () => {
+    const txns = [
+      makeTxn({ id: "on-card", name: "Adobe", accountId: "acct-llc" }),
+      makeTxn({ id: "elsewhere", name: "Adobe", accountId: "acct-personal" }),
+    ];
+    const rules = [makeRule({ matchPattern: "adobe", categoryId: "cat-software", accountId: "acct-llc" })];
+
+    const result = categorizeTransactions(txns, rules);
+
+    expect(result).toEqual([{ transactionId: "on-card", categoryId: "cat-software", source: "rule" }]);
+  });
+
+  it("treats an empty pattern on an account rule as a catch-all for that account", () => {
+    const txns = [
+      makeTxn({ id: "a", name: "Anything at all", accountId: "acct-llc" }),
+      makeTxn({ id: "b", name: "", merchantName: null, accountId: "acct-llc" }),
+      makeTxn({ id: "c", name: "Anything at all", accountId: "acct-personal" }),
+    ];
+    const rules = [makeRule({ matchPattern: "", categoryId: "cat-business", accountId: "acct-llc" })];
+
+    const result = categorizeTransactions(txns, rules);
+
+    expect(result.map((r) => r.transactionId).sort()).toEqual(["a", "b"]);
+    expect(result.every((r) => r.categoryId === "cat-business")).toBe(true);
+  });
+
+  it("never lets an empty pattern without an account match anything", () => {
+    // A hand-edited row; the action refuses to create one.
+    const txns = [makeTxn({ name: "Anything", accountId: "acct-llc" })];
+    const rules = [makeRule({ matchPattern: "", accountId: null })];
+
+    expect(categorizeTransactions(txns, rules)).toEqual([]);
+  });
+
+  it("evaluates account rules before general rules, whatever their priority", () => {
+    const txns = [makeTxn({ name: "Starbucks", accountId: "acct-llc" })];
+    const rules = [
+      makeRule({ id: "general", matchPattern: "starbucks", categoryId: "cat-coffee", priority: 999 }),
+      makeRule({ id: "llc", matchPattern: "", categoryId: "cat-meals", priority: 0, accountId: "acct-llc" }),
+    ];
+
+    expect(categorizeTransactions(txns, rules)[0].categoryId).toBe("cat-meals");
+  });
+
+  it("keeps priority order within the account tier", () => {
+    const txns = [makeTxn({ name: "Starbucks", accountId: "acct-llc" })];
+    const rules = [
+      makeRule({ id: "catch-all", matchPattern: "", categoryId: "cat-business", priority: 0, accountId: "acct-llc" }),
+      makeRule({ id: "specific", matchPattern: "starbucks", categoryId: "cat-meals", priority: 5, accountId: "acct-llc" }),
+    ];
+
+    expect(categorizeTransactions(txns, rules)[0].categoryId).toBe("cat-meals");
+  });
+
+  it("falls through to general rules when no account rule matches", () => {
+    const txns = [makeTxn({ name: "Starbucks", accountId: "acct-llc" })];
+    const rules = [
+      makeRule({ id: "llc", matchPattern: "adobe", categoryId: "cat-software", accountId: "acct-llc" }),
+      makeRule({ id: "general", matchPattern: "starbucks", categoryId: "cat-coffee" }),
+    ];
+
+    expect(categorizeTransactions(txns, rules)[0].categoryId).toBe("cat-coffee");
+  });
+});

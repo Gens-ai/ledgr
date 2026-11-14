@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { test, fc } from "@fast-check/vitest";
-import { normalizeRulePattern, MAX_RULE_PATTERN_LENGTH } from "./rule-pattern";
+import { normalizeRulePattern, normalizeRulePatternForScope, MAX_RULE_PATTERN_LENGTH } from "./rule-pattern";
 
 describe("normalizeRulePattern", () => {
   it("trims surrounding whitespace", () => {
@@ -58,4 +58,21 @@ describe("normalizeRulePattern", () => {
       expect(normalizeRulePattern(raw) !== null).toBe(usable);
     },
   );
+});
+
+describe("normalizeRulePatternForScope", () => {
+  it("allows an empty pattern when the rule is limited to an account", () => {
+    expect(normalizeRulePatternForScope("   ", { accountScoped: true })).toBe("");
+  });
+
+  it("still rejects an empty pattern for a rule on every account", () => {
+    expect(normalizeRulePatternForScope("   ", { accountScoped: false })).toBeNull();
+  });
+
+  it("trims and length-checks a non-empty pattern either way", () => {
+    expect(normalizeRulePatternForScope("  adobe ", { accountScoped: true })).toBe("adobe");
+    expect(
+      normalizeRulePatternForScope("x".repeat(MAX_RULE_PATTERN_LENGTH + 1), { accountScoped: true }),
+    ).toBeNull();
+  });
 });

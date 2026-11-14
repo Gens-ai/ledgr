@@ -3,9 +3,12 @@ import { db as defaultDb, type LedgrDb } from "@/db";
 import { transactions, categories, categoryGroups, merchants, accounts, transactionSplits, type CategorySource } from "@/db/schema";
 import { scopedQuery } from "@/lib/scoped-query";
 import { includedInSpending } from "@/queries/shared-conditions";
+import { resolveGroupFilter } from "@/queries/group-filter";
+import type { GroupFilter } from "@/lib/group-filter";
 import { notDeleted, notHidden, encodeCursor, decodeCursor, countRows } from "@/lib/query-helpers";
 
-export interface TransactionFilters {
+/** `groupIds`/`groupMode` (GroupFilter): the category-group filter (fork, lib/group-filter.ts). */
+export interface TransactionFilters extends GroupFilter {
   dateFrom?: string;
   dateTo?: string;
   accountId?: string;
@@ -125,6 +128,8 @@ export function baseTransactionQuery(db: LedgrDb, householdId: string) {
 function buildTransactionConditions(
   filters: TransactionFilters,
   spendingIncluded: SQL,
+  /** The resolved category-group term (`resolveGroupFilter`), if any. */
+  groupCondition?: SQL,
 ): (SQL | undefined)[] {
   // Hidden rows are excluded by default, same as deleted ones — not just
   // when some other filter happens to be set. `filters.hidden === true`
@@ -147,6 +152,9 @@ function buildTransactionConditions(
     conditions.push(isNull(transactions.categoryId));
   } else if (filters.categoryId !== undefined) {
     conditions.push(eq(transactions.categoryId, filters.categoryId));
+  }
+  if (groupCondition) {
+    conditions.push(groupCondition);
   }
   if (filters.reviewed !== undefined) {
     conditions.push(eq(transactions.reviewed, filters.reviewed));
@@ -185,7 +193,14 @@ export async function getTransactions(
   db: LedgrDb = defaultDb,
 ): Promise<TransactionPage> {
   const spendingIncluded = await includedInSpending(householdId, db);
-  return fetchTransactionPage(householdId, buildTransactionConditions(filters, spendingIncluded), limit, cursor, db);
+  const groupFilter = await resolveGroupFilter(householdId, filters, db);
+  return fetchTransactionPage(
+    householdId,
+    buildTransactionConditions(filters, spendingIncluded, groupFilter.condition(transactions.categoryId)),
+    limit,
+    cursor,
+    db,
+  );
 }
 
 /**
@@ -282,7 +297,12 @@ export async function getTransactionSummary(
   db: LedgrDb = defaultDb,
 ): Promise<TransactionSummary> {
   const spendingIncluded = await includedInSpending(householdId, db);
-  const conditions = buildTransactionConditions(filters, spendingIncluded);
+  const groupFilter = await resolveGroupFilter(householdId, filters, db);
+  const conditions = buildTransactionConditions(
+    filters,
+    spendingIncluded,
+    groupFilter.condition(transactions.categoryId),
+  );
   const base = baseTransactionQuery(db, householdId);
 
   const [result] = await base.joins(

@@ -389,7 +389,12 @@ export async function updateCategoryScoped(
   if (parsed.data.icon !== undefined) updates.icon = parsed.data.icon;
   if (parsed.data.isIncome !== undefined) {
     updates.isIncome = parsed.data.isIncome;
-    if (parsed.data.isIncome) updates.includeTransferInSpending = false;
+    if (parsed.data.isIncome) {
+      updates.includeTransferInSpending = false;
+      // An income category's credits are income already; the transfer-credit
+      // flag is for non-income categories only (getTransferIncomeCategoryIds).
+      updates.includeTransferCreditsAsIncome = false;
+    }
   }
   if (parsed.data.groupId !== undefined && parsed.data.groupId !== existing.groupId) {
     const group = await getOwnedGroup(householdId, parsed.data.groupId, db);
@@ -431,7 +436,13 @@ export async function updateCategoryReportingScoped(
   const scoped = scopedQuery(householdId, db);
   const updated = await db
     .update(categories)
-    .set({ includeTransferInSpending })
+    // The two transfer flags are mutually exclusive: counting a category's
+    // transfers as spending would make an owner's draw's debit an expense.
+    .set(
+      includeTransferInSpending
+        ? { includeTransferInSpending, includeTransferCreditsAsIncome: false }
+        : { includeTransferInSpending },
+    )
     .where(
       scoped.where(
         categories,
@@ -458,6 +469,57 @@ export async function updateCategoryReporting(
     includeTransferInSpending,
     db,
   );
+}
+
+/**
+ * Fork (ISSUE-011): whether the incoming side of a transfer filed under this
+ * category counts as income in income totals — "Owner's Draw". Custom,
+ * non-income categories only, matching the transfer-as-spending flag's
+ * eligibility. Turning it on clears transfer-as-spending, so the draw's
+ * outgoing leg can never count as spending.
+ */
+export async function updateCategoryTransferIncomeScoped(
+  householdId: string,
+  categoryId: string,
+  includeTransferCreditsAsIncome: boolean,
+  db: LedgrDb = defaultDb,
+): Promise<ActionResult> {
+  const parsedId = idSchema.safeParse(categoryId);
+  const parsedFlag = z.boolean().safeParse(includeTransferCreditsAsIncome);
+  if (!parsedId.success || !parsedFlag.success) return { error: "Invalid input." };
+  const scoped = scopedQuery(householdId, db);
+  const updated = await db
+    .update(categories)
+    .set(
+      parsedFlag.data
+        ? { includeTransferCreditsAsIncome: true, includeTransferInSpending: false }
+        : { includeTransferCreditsAsIncome: false },
+    )
+    .where(
+      scoped.where(
+        categories,
+        eq(categories.id, parsedId.data),
+        eq(categories.isSystem, false),
+        eq(categories.isIncome, false),
+      ),
+    )
+    .returning({ id: categories.id });
+  if (updated.length === 0) {
+    return { error: "Only custom, non-income categories can count incoming transfers as income." };
+  }
+  revalidateCategoryConsumers();
+  revalidatePath("/");
+  return { success: true };
+}
+
+export async function updateCategoryTransferIncome(
+  categoryId: string,
+  includeTransferCreditsAsIncome: boolean,
+  db: LedgrDb = defaultDb,
+): Promise<ActionResult> {
+  const auth = await authorizeAction();
+  if ("error" in auth) return auth;
+  return updateCategoryTransferIncomeScoped(auth.householdId, categoryId, includeTransferCreditsAsIncome, db);
 }
 
 /** Counts what references a category. Reads `transactions`, so it runs under RLS. */

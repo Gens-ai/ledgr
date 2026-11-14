@@ -25,6 +25,9 @@ const transactionFiltersSchema = z.object({
   amountMin: z.coerce.number().optional(),
   amountMax: z.coerce.number().optional(),
   transactionType: z.enum(["expense", "credits", "transfer"]).optional(),
+  hidden: z.boolean().optional(),
+  groupIds: z.array(z.string().min(1)).max(200).optional(),
+  groupMode: z.enum(["include", "exclude"]).optional(),
 });
 
 function buildCategoryUpdate(categoryId: string | null) {

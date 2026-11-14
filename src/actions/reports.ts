@@ -24,6 +24,8 @@ const saveReportSchema = z.object({
     dateTo: z.string(),
     accountIds: z.array(z.string()).optional(),
     categoryIds: z.array(z.string()).optional(),
+    groupIds: z.array(z.string()).optional(),
+    groupMode: z.enum(["include", "exclude"]).optional(),
   }),
 });
 

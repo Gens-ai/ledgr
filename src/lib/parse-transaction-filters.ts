@@ -1,4 +1,5 @@
 import type { TransactionFilters } from "@/queries/transactions";
+import { parseGroupFilterParams } from "@/lib/group-filter";
 
 export function parseTransactionFilters(
   params: Record<string, string | string[] | undefined>,
@@ -32,6 +33,10 @@ export function parseTransactionFilters(
     amountMax,
     transactionType,
     hidden: params.hidden === "true" ? true : undefined,
+    ...parseGroupFilterParams(
+      typeof params.groups === "string" ? params.groups : undefined,
+      typeof params.groupMode === "string" ? params.groupMode : undefined,
+    ),
   };
 
   return { filters, isReviewMode };

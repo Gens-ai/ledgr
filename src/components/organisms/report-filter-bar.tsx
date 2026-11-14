@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronsUpDown, X, Landmark, Tags, SlidersHorizontal } from "lucide-react";
+import { ChevronsUpDown, X, Landmark, Tags, SlidersHorizontal, FolderTree } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -15,6 +15,8 @@ import { useSearchParamFilters } from "@/hooks/use-search-param-filters";
 import { rangeToDateBounds, formatDateShort, formatTxnSpan } from "@/lib/date-utils";
 import { resolveReportDateSelection } from "@/lib/report-date-selection";
 import { cn } from "@/lib/utils";
+import { GroupFilterFields } from "@/components/molecules/group-filter-fields";
+import { describeGroupFilter, groupFilterParams, parseGroupFilterParams, type GroupMode } from "@/lib/group-filter";
 import type { CategoryGroup } from "@/queries/categories";
 
 // Reports keeps its own preset ids (mapped to rangeToDateBounds + the server's
@@ -131,6 +133,7 @@ export function ReportFilterBar({ accounts, categories }: ReportFilterBarProps) 
   const { updateFilter, updateFilters, clearFilters, hasFilters, searchParams } = useSearchParamFilters();
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [groupsOpen, setGroupsOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   const selectedAccountIds = searchParams.get("accounts")?.split(",").filter(Boolean) ?? [];
@@ -139,6 +142,13 @@ export function ReportFilterBar({ accounts, categories }: ReportFilterBarProps) 
   const selectedCategoryIds = searchParams.get("categories")?.split(",").filter(Boolean) ?? [];
   // Net Worth has no category breakdown to filter — the chip did nothing there.
   const showCategoryFilter = (searchParams.get("tab") ?? "spending") !== "net-worth";
+  const groupFilter = parseGroupFilterParams(searchParams.get("groups"), searchParams.get("groupMode"));
+  const selectedGroupIds = groupFilter.groupIds ?? [];
+  // Keep the chosen mode while no group is ticked yet, so "All except" can be
+  // picked first.
+  const [pendingMode, setPendingMode] = useState<GroupMode>("include");
+  const groupMode: GroupMode = groupFilter.groupMode ?? pendingMode;
+  const groupValue = describeGroupFilter(selectedGroupIds, groupMode, categories);
 
   const fromParam = searchParams.get("from");
   const toParam = searchParams.get("to");
@@ -188,10 +198,34 @@ export function ReportFilterBar({ accounts, categories }: ReportFilterBarProps) 
     updateFilter("categories", next.length > 0 ? next.join(",") : null);
   }
 
+  function toggleGroup(id: string) {
+    const next = selectedGroupIds.includes(id)
+      ? selectedGroupIds.filter((g) => g !== id)
+      : [...selectedGroupIds, id];
+    updateFilters(groupFilterParams(next, groupMode));
+  }
+
+  function changeGroupMode(mode: GroupMode) {
+    setPendingMode(mode);
+    updateFilters(groupFilterParams(selectedGroupIds, mode));
+  }
+
+  const groupFields = (
+    <GroupFilterFields
+      groups={categories}
+      selectedIds={selectedGroupIds}
+      mode={groupMode}
+      onToggle={toggleGroup}
+      onModeChange={changeGroupMode}
+    />
+  );
+
   // Below `sm`, the account and category pickers fold into one "Filters"
   // button rather than costing two chips' worth of width on a phone-sized
   // row. The count covers whichever of the two apply on this tab.
-  const mobileFilterCount = selectedAccountIds.length + (showCategoryFilter ? selectedCategoryIds.length : 0);
+  const mobileFilterCount =
+    selectedAccountIds.length +
+    (showCategoryFilter ? selectedCategoryIds.length + selectedGroupIds.length : 0);
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -253,6 +287,23 @@ export function ReportFilterBar({ accounts, categories }: ReportFilterBarProps) 
         </Popover>
       )}
 
+      {/* Category-group multi-select with include/exclude — same rules as the
+          category chip: hidden on Net Worth, sm and up only. */}
+      {showCategoryFilter && (
+        <Popover open={groupsOpen} onOpenChange={setGroupsOpen}>
+          <PopoverTrigger
+            render={<Button variant="outline" size="sm" className="hidden h-8 text-xs sm:inline-flex" />}
+          >
+            <FolderTree className="mr-1 h-3.5 w-3.5" />
+            {groupValue ?? "All groups"}
+            <ChevronsUpDown className="ml-1 h-3 w-3" />
+          </PopoverTrigger>
+          <PopoverContent className="w-[240px] p-0" align="start">
+            {groupFields}
+          </PopoverContent>
+        </Popover>
+      )}
+
       {/* Combined "Filters" — below `sm` only, replacing both chips above. On
           Net Worth it holds just accounts, matching `showCategoryFilter`. */}
       <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
@@ -284,6 +335,9 @@ export function ReportFilterBar({ accounts, categories }: ReportFilterBarProps) 
                 selectedCategoryIds={selectedCategoryIds}
                 onToggle={toggleCategory}
               />
+              <Separator />
+              <div className="px-3 pt-2.5 pb-1 text-xs font-medium text-muted-foreground">Groups</div>
+              {groupFields}
             </>
           )}
         </PopoverContent>

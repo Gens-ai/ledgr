@@ -14,6 +14,7 @@ import {
   BadgeCheck,
   CalendarDays,
   EyeOff,
+  FolderTree,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSearchParamFilters } from "@/hooks/use-search-param-filters";
@@ -64,6 +65,8 @@ import {
   type FilterChipKey,
 } from "@/lib/transaction-filter-chips";
 import { UNCATEGORIZED } from "@/lib/labels";
+import { GroupFilterFields } from "@/components/molecules/group-filter-fields";
+import { describeGroupFilter, groupFilterParams, parseGroupFilterParams, type GroupMode } from "@/lib/group-filter";
 import type { CategoryGroup } from "@/queries/categories";
 
 interface TransactionFiltersProps {
@@ -105,6 +108,9 @@ export function TransactionFilters({ accounts, categories, resultCount }: Transa
 
   const [accountOpen, setAccountOpen] = useState(false);
   const [categoryOpen, setCategoryOpen] = useState(false);
+  const [groupOpen, setGroupOpen] = useState(false);
+  // Keeps the chosen mode while no group is ticked yet (the URL holds no mode then).
+  const [pendingGroupMode, setPendingGroupMode] = useState<GroupMode>("include");
   const [typeOpen, setTypeOpen] = useState(false);
   const [amountOpen, setAmountOpen] = useState(false);
 
@@ -142,6 +148,31 @@ export function TransactionFilters({ accounts, categories, resultCount }: Transa
   const categoryId = searchParams.get("category");
   const categoryValue = describeCategoryFilter(categoryId, categories);
 
+  const groupFilter = parseGroupFilterParams(searchParams.get("groups"), searchParams.get("groupMode"));
+  const groupIds = groupFilter.groupIds ?? [];
+  const groupMode: GroupMode = groupFilter.groupMode ?? pendingGroupMode;
+  const groupValue = describeGroupFilter(groupIds, groupMode, categories);
+
+  function toggleGroup(id: string) {
+    const next = groupIds.includes(id) ? groupIds.filter((g) => g !== id) : [...groupIds, id];
+    updateFilters(groupFilterParams(next, groupMode));
+  }
+
+  function changeGroupMode(mode: GroupMode) {
+    setPendingGroupMode(mode);
+    updateFilters(groupFilterParams(groupIds, mode));
+  }
+
+  const groupFields = (
+    <GroupFilterFields
+      groups={categories}
+      selectedIds={groupIds}
+      mode={groupMode}
+      onToggle={toggleGroup}
+      onModeChange={changeGroupMode}
+    />
+  );
+
   const typeId = searchParams.get("type");
   const typeValue = describeTypeFilter(typeId);
 
@@ -167,6 +198,8 @@ export function TransactionFilters({ accounts, categories, resultCount }: Transa
     to: toParam,
     accountId,
     categoryId,
+    groupIds,
+    groupMode,
     typeId,
     amountMinDisplay: amount.minDisplay,
     amountMaxDisplay: amount.maxDisplay,
@@ -180,6 +213,7 @@ export function TransactionFilters({ accounts, categories, resultCount }: Transa
     date: () => updateFilters({ from: null, to: null }),
     account: () => updateFilter("account", null),
     category: () => updateFilter("category", null),
+    group: () => updateFilters({ groups: null, groupMode: null }),
     type: () => updateFilter("type", null),
     amount: () => {
       amount.reset();
@@ -301,6 +335,14 @@ export function TransactionFilters({ accounts, categories, resultCount }: Transa
       ],
       selectedId: categoryId ?? "",
       onSelect: (id) => updateFilter("category", id || null),
+    },
+    {
+      key: "group",
+      label: "Groups",
+      icon: FolderTree,
+      value: groupValue,
+      placeholder: "All groups",
+      extra: groupFields,
     },
     {
       key: "type",
@@ -488,6 +530,20 @@ export function TransactionFilters({ accounts, categories, resultCount }: Transa
                 ))}
               </CommandList>
             </Command>
+          </PopoverContent>
+        </Popover>
+
+        {/* Category groups — multi-select with include/exclude */}
+        <Popover open={groupOpen} onOpenChange={setGroupOpen}>
+          <PopoverTrigger
+            render={<Button variant={groupValue ? "default" : "outline"} size="sm" className="h-8 text-xs" />}
+          >
+            <FolderTree className="mr-1 h-3.5 w-3.5" />
+            {triggerLabel("Groups", groupValue, !!groupValue)}
+            <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
+          </PopoverTrigger>
+          <PopoverContent className="w-[240px] p-0" align="start">
+            {groupFields}
           </PopoverContent>
         </Popover>
 

@@ -19,6 +19,7 @@ const actions = vi.hoisted(() => ({
   updateCategory: vi.fn(),
   updateCategoryGroupIcon: vi.fn(),
   updateCategoryReporting: vi.fn(),
+  updateCategoryTransferIncome: vi.fn(),
 }));
 vi.mock("@/actions/categories", () => actions);
 
@@ -36,6 +37,7 @@ const groups: CategoryGroup[] = [
         icon: null,
         isIncome: false,
         includeTransferInSpending: false,
+        includeTransferCreditsAsIncome: false,
         isSystem: true,
         sortOrder: 0,
       },
@@ -54,6 +56,7 @@ const groups: CategoryGroup[] = [
         icon: null,
         isIncome: false,
         includeTransferInSpending: false,
+        includeTransferCreditsAsIncome: false,
         isSystem: false,
         sortOrder: 0,
       },
@@ -152,5 +155,34 @@ describe("CategoryManager group selection", () => {
     expect(screen.getAllByRole("checkbox", { name: /^Count transfers as spending/ })).toHaveLength(2);
     expect(screen.queryByRole("checkbox", { name: /cash flow/i })).toBeNull();
     expect(screen.getByText(/credit card payments/i)).not.toBeNull();
+  });
+  it("offers 'count incoming transfers as income' in the edit dialog of a custom category only", async () => {
+    actions.updateCategory.mockResolvedValue({ success: true });
+    actions.updateCategoryTransferIncome.mockResolvedValue({ success: true });
+    const { CategoryManager } = await import("./category-manager");
+    render(<CategoryManager groups={groups} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Childcare" }));
+    await screen.findByText("Edit Childcare");
+    // Base UI labels the checkbox by its wrapping <label>, so match on a regex.
+    const toggle = await screen.findByRole("checkbox", { name: /Count incoming transfers as income/ });
+    expect(screen.getByText(/owner.s draw/i)).not.toBeNull();
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(actions.updateCategoryTransferIncome).toHaveBeenCalledWith("custom-category", true),
+    );
+  });
+
+  it("does not offer it on a system category", async () => {
+    const { CategoryManager } = await import("./category-manager");
+    render(<CategoryManager groups={groups} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Groceries" }));
+    await screen.findByText("Edit Groceries");
+    expect(
+      screen.queryByRole("checkbox", { name: /Count incoming transfers as income/, hidden: true }),
+    ).toBeNull();
   });
 });

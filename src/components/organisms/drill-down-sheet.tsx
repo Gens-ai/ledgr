@@ -109,7 +109,13 @@ export function DrillDownSheet({ filter, dateFrom, dateTo, accountIds, categorie
       new Set(
         categories.flatMap((g) =>
           g.categories
-            .filter((c) => c.includeTransferInSpending && !c.isIncome && !c.isSystem)
+            .filter(
+              (c) =>
+                c.includeTransferInSpending &&
+                !c.includeTransferCreditsAsIncome &&
+                !c.isIncome &&
+                !c.isSystem,
+            )
             .map((c) => c.id),
         ),
       ),

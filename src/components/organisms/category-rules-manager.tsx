@@ -23,7 +23,12 @@ import type { CategoryGroup } from "@/queries/categories";
 interface CategoryRulesManagerProps {
   rules: CategoryRuleRow[];
   categoryGroups: CategoryGroup[];
+  /** The household's live accounts, for limiting a rule to one of them. */
+  accounts: { id: string; name: string }[];
 }
+
+/** Base UI's Select needs a value for every item; this one means "no account". */
+const ANY_ACCOUNT = "__any__";
 
 type MatchField = "name" | "merchant";
 
@@ -38,13 +43,15 @@ interface DraftState {
   matchField: MatchField;
   matchPattern: string;
   priority: string;
+  /** ANY_ACCOUNT, or the id of the one account the rule is limited to. */
+  accountId: string;
 }
 
 function emptyDraft(categoryId: string): DraftState {
-  return { id: null, categoryId, matchField: "name", matchPattern: "", priority: "0" };
+  return { id: null, categoryId, matchField: "name", matchPattern: "", priority: "0", accountId: ANY_ACCOUNT };
 }
 
-export function CategoryRulesManager({ rules, categoryGroups }: CategoryRulesManagerProps) {
+export function CategoryRulesManager({ rules, categoryGroups, accounts }: CategoryRulesManagerProps) {
   const flatCategories = categoryGroups.flatMap((g) => g.categories);
   const firstCategoryId = flatCategories[0]?.id ?? "";
 
@@ -65,6 +72,7 @@ export function CategoryRulesManager({ rules, categoryGroups }: CategoryRulesMan
       matchField: rule.matchField,
       matchPattern: rule.matchPattern,
       priority: String(rule.priority),
+      accountId: rule.accountId ?? ANY_ACCOUNT,
     });
   }
 
@@ -76,6 +84,7 @@ export function CategoryRulesManager({ rules, categoryGroups }: CategoryRulesMan
       matchField: draft.matchField,
       matchPattern: draft.matchPattern,
       priority: Number(draft.priority) || 0,
+      accountId: draft.accountId === ANY_ACCOUNT ? null : draft.accountId,
     };
 
     startTransition(async () => {
@@ -129,7 +138,7 @@ export function CategoryRulesManager({ rules, categoryGroups }: CategoryRulesMan
             <p className="text-xs text-muted-foreground">
               {rules.length === 0
                 ? "Checked before every other categorization step"
-                : `${rules.length} rule${rules.length === 1 ? "" : "s"}, highest priority first`}
+                : `${rules.length} rule${rules.length === 1 ? "" : "s"}, account rules first, then highest priority`}
             </p>
           </div>
           {!draft && (
@@ -186,13 +195,43 @@ export function CategoryRulesManager({ rules, categoryGroups }: CategoryRulesMan
               </div>
             </div>
 
+            <div className="space-y-1.5">
+              <Label htmlFor="rule-account">Account</Label>
+              <Select
+                value={draft.accountId}
+                onValueChange={(v) => {
+                  if (v !== null) setDraft({ ...draft, accountId: v });
+                }}
+              >
+                <SelectTrigger id="rule-account" className="w-full sm:w-1/2">
+                  <SelectValue>
+                    {draft.accountId === ANY_ACCOUNT
+                      ? "Any account"
+                      : (accounts.find((a) => a.id === draft.accountId)?.name ?? "Removed account")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY_ACCOUNT}>Any account</SelectItem>
+                  {accounts.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                A rule limited to one account runs before rules for any account. With an account
+                chosen, leave the pattern empty to catch everything on that account.
+              </p>
+            </div>
+
             <div className="grid gap-3 sm:grid-cols-[1fr_110px]">
               <div className="space-y-1.5">
                 <Label htmlFor="rule-pattern">Pattern contains</Label>
                 <Input
                   id="rule-pattern"
                   value={draft.matchPattern}
-                  placeholder="e.g. twitterapi"
+                  placeholder={draft.accountId === ANY_ACCOUNT ? "e.g. twitterapi" : "Empty = everything on this account"}
                   autoComplete="off"
                   onChange={(e) => setDraft({ ...draft, matchPattern: e.target.value })}
                 />
@@ -218,7 +257,11 @@ export function CategoryRulesManager({ rules, categoryGroups }: CategoryRulesMan
             </div>
 
             <div className="flex gap-2">
-              <Button size="sm" onClick={save} disabled={pending || !draft.matchPattern.trim()}>
+              <Button
+                size="sm"
+                onClick={save}
+                disabled={pending || (draft.accountId === ANY_ACCOUNT && !draft.matchPattern.trim())}
+              >
                 {draft.id ? "Save rule" : "Add rule"}
               </Button>
               <Button size="sm" variant="outline" onClick={() => setDraft(null)} disabled={pending}>
@@ -252,7 +295,16 @@ export function CategoryRulesManager({ rules, categoryGroups }: CategoryRulesMan
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
                     {rule.matchField}
                   </span>
-                  <span className="font-mono text-xs">&ldquo;{rule.matchPattern}&rdquo;</span>
+                  {rule.matchPattern ? (
+                    <span className="font-mono text-xs">&ldquo;{rule.matchPattern}&rdquo;</span>
+                  ) : (
+                    <span className="text-xs italic text-muted-foreground">everything</span>
+                  )}
+                  {rule.accountId && (
+                    <span className="text-xs text-muted-foreground">
+                      on <span className="font-medium text-foreground">{rule.accountName ?? "a removed account"}</span>
+                    </span>
+                  )}
                   <span className="text-muted-foreground">→</span>
                   <span className="font-medium">{rule.categoryName}</span>
                 </div>
@@ -261,7 +313,7 @@ export function CategoryRulesManager({ rules, categoryGroups }: CategoryRulesMan
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7"
-                    aria-label={`Edit rule for ${rule.matchPattern}`}
+                    aria-label={`Edit rule for ${rule.matchPattern || `everything on ${rule.accountName ?? "account"}`}`}
                     onClick={() => openEdit(rule)}
                     disabled={pending}
                   >
@@ -271,7 +323,7 @@ export function CategoryRulesManager({ rules, categoryGroups }: CategoryRulesMan
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7 hover:text-destructive"
-                    aria-label={`Delete rule for ${rule.matchPattern}`}
+                    aria-label={`Delete rule for ${rule.matchPattern || `everything on ${rule.accountName ?? "account"}`}`}
                     onClick={() => remove(rule.id)}
                     disabled={pending}
                   >

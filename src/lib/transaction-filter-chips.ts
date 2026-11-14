@@ -14,6 +14,7 @@
 import { formatDateShort } from "@/lib/date-utils";
 import { DATE_PRESETS, matchDatePreset } from "@/lib/date-presets";
 import { UNCATEGORIZED } from "@/lib/labels";
+import { describeGroupFilter, type GroupMode } from "@/lib/group-filter";
 import type { CategoryGroup } from "@/queries/categories";
 
 export const TYPE_LABELS: Record<string, string> = {
@@ -26,6 +27,7 @@ export type FilterChipKey =
   | "date"
   | "account"
   | "category"
+  | "group"
   | "type"
   | "amount"
   | "reviewed"
@@ -48,6 +50,9 @@ export interface ChipInput {
   to: string | null;
   accountId: string | null;
   categoryId: string | null;
+  /** The category-group filter (fork); absent or empty when unset. */
+  groupIds?: string[];
+  groupMode?: GroupMode;
   typeId: string | null;
   /** Amount bounds as the user typed them, not cents — the inputs are the source. */
   amountMinDisplay: string;
@@ -124,6 +129,9 @@ export function buildFilterChips(input: ChipInput): FilterChip[] {
 
   const category = describeCategoryFilter(input.categoryId, input.categories);
   if (category) chips.push({ key: "category", label: "Category", value: category });
+
+  const group = describeGroupFilter(input.groupIds ?? [], input.groupMode ?? "include", input.categories);
+  if (group) chips.push({ key: "group", label: "Groups", value: group });
 
   const type = describeTypeFilter(input.typeId);
   if (type) chips.push({ key: "type", label: null, value: type });

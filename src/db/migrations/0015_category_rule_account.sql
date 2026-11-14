@@ -1,0 +1,2 @@
+ALTER TABLE "category_rules" ADD COLUMN "account_id" text;--> statement-breakpoint
+ALTER TABLE "category_rules" ADD CONSTRAINT "category_rules_account_id_accounts_id_fk" FOREIGN KEY ("account_id") REFERENCES "public"."accounts"("id") ON DELETE cascade ON UPDATE no action;

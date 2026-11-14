@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { useSearchParamFilters } from "@/hooks/use-search-param-filters";
 import { saveReport, deleteReport } from "@/actions/reports";
+import { groupFilterParams, parseGroupFilterParams } from "@/lib/group-filter";
 
 interface SavedReport {
   id: string;
@@ -50,6 +51,7 @@ export function SavedReportPicker({
         to: filters.dateTo ?? null,
         accounts: filters.accountIds?.join(",") ?? null,
         categories: filters.categoryIds?.join(",") ?? null,
+        ...groupFilterParams(filters.groupIds ?? [], filters.groupMode === "exclude" ? "exclude" : "include"),
         preset: null,
       };
       updateFilters(params);
@@ -72,6 +74,7 @@ export function SavedReportPicker({
         .get("categories")
         ?.split(",")
         .filter(Boolean),
+      ...parseGroupFilterParams(searchParams.get("groups"), searchParams.get("groupMode")),
     };
 
     await saveReport({

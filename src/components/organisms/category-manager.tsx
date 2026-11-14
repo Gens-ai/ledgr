@@ -392,6 +392,9 @@ export function CategoryManager({ groups }: CategoryManagerProps) {
                       </label>
                     )}
                     {category.isIncome && <Badge variant="secondary">Income</Badge>}
+                    {category.includeTransferCreditsAsIncome && !category.isIncome && !category.isSystem && (
+                      <Badge variant="outline">Transfers in = income</Badge>
+                    )}
                     <Badge variant={category.isSystem ? "secondary" : "outline"}>
                       {category.isSystem ? "System" : "Custom"}
                     </Badge>
@@ -401,6 +404,8 @@ export function CategoryManager({ groups }: CategoryManagerProps) {
                         name: category.name,
                         groupId: group.id,
                         isIncome: category.isIncome,
+                        isSystem: category.isSystem,
+                        includeTransferCreditsAsIncome: category.includeTransferCreditsAsIncome,
                       }}
                       groups={groups}
                       disabled={pending}

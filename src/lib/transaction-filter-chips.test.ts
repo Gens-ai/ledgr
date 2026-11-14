@@ -150,3 +150,16 @@ describe("buildFilterChips", () => {
     ]);
   });
 });
+
+describe("buildFilterChips — category groups", () => {
+  it("adds a Groups chip after the category chip, naming the mode", () => {
+    expect(buildFilterChips({ ...EMPTY, categoryId: "c1", groupIds: ["g1"], groupMode: "exclude" })).toEqual([
+      { key: "category", label: "Category", value: "Groceries" },
+      { key: "group", label: "Groups", value: "All except Food" },
+    ]);
+  });
+
+  it("skips a group chip whose ids no longer resolve", () => {
+    expect(buildFilterChips({ ...EMPTY, groupIds: ["gone"], groupMode: "include" })).toEqual([]);
+  });
+});

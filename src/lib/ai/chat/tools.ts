@@ -152,7 +152,8 @@ export function financialTools(householdId: string, userId: string) {
       execute: async ({ months }) => {
         const now = new Date();
         // Same income/expense rule as the dashboard and Reports (getCashFlow ->
-        // incomeTotalsRule): refunds and transfers are not income.
+        // incomeTotalsRule): transfers are not income, except an owner's-draw
+        // credit (includedInIncomeTotals, ISSUE-011).
         const cashFlow = await withHousehold(householdId, (tx) =>
           getCashFlow(householdId, months, tx),
         );
